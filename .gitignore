@@ -1,0 +1,18 @@
+# env / secrets
+.env
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+
+# backend
+backend/bin/
+*.test
+
+# host data
+/data/
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,77 @@
+name: campusclaw
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: campusclaw-mysql
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-campusclaw}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./deploy/mysql/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    networks:
+      - ccnet
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: campusclaw-backend
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-campusclaw}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-28800}
+      SEED_TEACHER_A_USERNAME: ${SEED_TEACHER_A_USERNAME}
+      SEED_TEACHER_A_PASSWORD: ${SEED_TEACHER_A_PASSWORD}
+      SEED_STUDENT_A1_USERNAME: ${SEED_STUDENT_A1_USERNAME}
+      SEED_STUDENT_A1_PASSWORD: ${SEED_STUDENT_A1_PASSWORD}
+      SEED_STUDENT_B1_USERNAME: ${SEED_STUDENT_B1_USERNAME}
+      SEED_STUDENT_B1_PASSWORD: ${SEED_STUDENT_B1_PASSWORD}
+    volumes:
+      - materials-data:/app/data
+    networks:
+      - ccnet
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: campusclaw-nginx
+    ports:
+      - "8080:80"
+    networks:
+      - ccnet
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+  materials-data:
+
+networks:
+  ccnet:
+    driver: bridge
