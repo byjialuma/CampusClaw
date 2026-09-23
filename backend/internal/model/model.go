@@ -21,6 +21,13 @@ type User struct {
 // IsTeacher 判断用户是否为教师。
 func (u *User) IsTeacher() bool { return u.Role == RoleTeacher }
 
+// 索引状态取值。
+const (
+	IndexPending = "pending"
+	IndexReady   = "ready"
+	IndexFailed  = "failed"
+)
+
 // Material 是讲义（知识库材料）记录。
 type Material struct {
 	ID             int64     `json:"id"`
@@ -32,6 +39,24 @@ type Material struct {
 	SizeBytes      int64     `json:"sizeBytes"`
 	UploaderName   string    `json:"uploaderName"`
 	CreatedAt      time.Time `json:"createdAt"`
+	// IndexStatus 是向量索引状态；无 material_index 行时按 pending 处理。
+	IndexStatus string `json:"indexStatus"`
+}
+
+// 分片来源位置类型。
+const (
+	LocatorPage    = "page"    // PDF：页码（1 基）
+	LocatorHeading = "heading" // Markdown：章节标题路径
+	LocatorLines   = "lines"   // TXT：起止行号（1 基）
+)
+
+// Locator 描述分片在原文档中的可定位位置，按 Kind 使用不同字段。
+type Locator struct {
+	Kind      string `json:"kind"`
+	Page      int    `json:"page,omitempty"`
+	Path      string `json:"path,omitempty"`
+	StartLine int    `json:"startLine,omitempty"`
+	EndLine   int    `json:"endLine,omitempty"`
 }
 
 // Ticket 是一次性下载票据。

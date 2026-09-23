@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -59,6 +60,14 @@ func (a *API) uploadMaterial(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "保存材料失败")
 		return
+	}
+
+	// 异步入索引队列：201 不等待向量化完成；入队失败只记录日志，
+	// 材料保持 pending，由下次启动回填兜底。
+	if a.Indexer != nil {
+		if err := a.Indexer.Enqueue(r.Context(), m.ID); err != nil {
+			log.Printf("材料 %d 入索引队列失败（等待启动回填）: %v", m.ID, err)
+		}
 	}
 	writeJSON(w, http.StatusCreated, m)
 }

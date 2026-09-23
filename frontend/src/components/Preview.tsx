@@ -1,13 +1,31 @@
 import { useEffect, useState } from 'react'
 import { marked } from 'marked'
 import { fetchContent } from '../api'
-import type { Material } from '../types'
+import type { Locator, Material } from '../types'
 
 interface Props {
   material: Material | null
+  // 从检索结果跳转时携带的溯源位置提示（PDF 无法自动翻页，以横幅提示页码）。
+  locatorHint?: Locator | null
+  onClearHint?: () => void
 }
 
-export default function Preview({ material }: Props) {
+function hintText(loc: Locator): string {
+  switch (loc.kind) {
+    case 'page':
+      return `引用位置：第 ${loc.page ?? '?'} 页，请对照 PDF 页码查看`
+    case 'heading':
+      return `引用章节：${loc.path || '文档开头'}`
+    case 'lines':
+      return loc.startLine === loc.endLine
+        ? `引用位置：第 ${loc.startLine} 行`
+        : `引用位置：第 ${loc.startLine}–${loc.endLine} 行`
+    default:
+      return ''
+  }
+}
+
+export default function Preview({ material, locatorHint = null, onClearHint }: Props) {
   const [html, setHtml] = useState('')
   const [pdfUrl, setPdfUrl] = useState('')
   const [error, setError] = useState('')
@@ -70,6 +88,16 @@ export default function Preview({ material }: Props) {
       </h2>
       {loading && <p className="muted">内容加载中…</p>}
       {error && <div className="alert alert-error">{error}</div>}
+      {locatorHint && hintText(locatorHint) && (
+        <div className="locator-hint" role="status">
+          <span>{hintText(locatorHint)}</span>
+          {onClearHint && (
+            <button type="button" className="locator-hint-close" onClick={onClearHint} aria-label="清除定位提示">
+              ×
+            </button>
+          )}
+        </div>
+      )}
       {pdfUrl && <iframe className="pdf-frame" title={material.name} src={pdfUrl} />}
       {html && <div className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />}
     </section>

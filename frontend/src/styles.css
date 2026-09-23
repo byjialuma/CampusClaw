@@ -525,3 +525,151 @@ body {
   color: var(--ink-soft);
   margin: 6px 0;
 }
+
+/* ---------- 知识库检索 ---------- */
+.search-card {
+  margin-bottom: 14px;
+}
+.search-form {
+  display: flex;
+  gap: 8px;
+}
+.search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--ink);
+}
+.search-input:focus {
+  outline: none;
+  border-color: var(--pku-red);
+  box-shadow: 0 0 0 3px rgba(148, 7, 10, 0.12);
+}
+
+.search-results-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.search-summary {
+  flex: none;
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+.search-empty {
+  padding: 36px 12px;
+  text-align: center;
+}
+.search-empty-title {
+  font-size: 15px;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+.search-error {
+  margin: 8px 0;
+}
+
+.result-list {
+  /* 结果卡片为定高 flex 容器（.preview-card overflow:hidden），
+     列表本身作为滚动体，否则超出视口的命中会被裁掉且无法滚动查看。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 2px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.result-item {
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #fff;
+}
+.result-item:hover {
+  border-color: var(--pku-red-border);
+}
+.result-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.result-file {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--pku-red-dark);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.result-score {
+  font-size: 12px;
+  color: var(--ink-soft);
+  background: var(--pku-red-light);
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+.result-snippet {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.result-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+.locator-badge {
+  border: 1px solid var(--pku-red-border);
+  background: var(--pku-red-light);
+  color: var(--pku-red-dark);
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 12.5px;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.locator-badge:hover {
+  background: var(--pku-red);
+  color: #fff;
+}
+
+.locator-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--pku-red-light);
+  border: 1px solid var(--pku-red-border);
+  color: var(--pku-red-dark);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.locator-hint-close {
+  border: none;
+  background: transparent;
+  color: var(--pku-red-dark);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}

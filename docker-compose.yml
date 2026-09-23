@@ -22,6 +22,21 @@ services:
       retries: 24
     restart: unless-stopped
 
+  qdrant:
+    # 向量数据库：仅接入内部网络，不发布宿主机端口。
+    image: qdrant/qdrant:v1.12.4
+    container_name: campusclaw-qdrant
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - ccnet
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    restart: unless-stopped
+
   backend:
     build:
       context: .
@@ -40,12 +55,21 @@ services:
       SEED_STUDENT_A1_PASSWORD: ${SEED_STUDENT_A1_PASSWORD}
       SEED_STUDENT_B1_USERNAME: ${SEED_STUDENT_B1_USERNAME}
       SEED_STUDENT_B1_PASSWORD: ${SEED_STUDENT_B1_PASSWORD}
+      QDRANT_URL: http://qdrant:6333
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-stub}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-2048}
+      SEARCH_TOP_K: ${SEARCH_TOP_K:-5}
     volumes:
       - materials-data:/app/data
     networks:
       - ccnet
     depends_on:
       mysql:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/health"]
@@ -71,6 +95,7 @@ services:
 volumes:
   mysql-data:
   materials-data:
+  qdrant-data:
 
 networks:
   ccnet:

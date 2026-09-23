@@ -1,4 +1,4 @@
-import type { Material, Me } from './types'
+import type { Material, Me, SearchResult } from './types'
 
 // 所有请求都携带同源会话 Cookie（HttpOnly，JS 不可读）。
 async function request<T>(path: string, init: RequestInit = {}): Promise<{ status: number; data: T }> {
@@ -67,6 +67,22 @@ export async function uploadMaterial(file: File): Promise<Material> {
     throw new ApiError(status, (data as { error: string }).error ?? '上传失败')
   }
   return data as Material
+}
+
+// 班级范围由服务端会话决定，前端不传任何班级参数。
+export async function searchMaterials(query: string): Promise<SearchResult[]> {
+  const { status, data } = await request<{ results: SearchResult[] } | { error: string }>(
+    `/api/search?q=${encodeURIComponent(query)}`,
+  )
+  if (status === 401) {
+    window.location.replace('/login?next=' + encodeURIComponent(window.location.pathname))
+    throw new ApiError(401, '未登录')
+  }
+  if (status !== 200) {
+    const msg = (data as { error?: string }).error ?? '知识库检索失败'
+    throw new ApiError(status, msg)
+  }
+  return (data as { results: SearchResult[] }).results
 }
 
 export async function fetchContent(m: Material): Promise<Blob> {

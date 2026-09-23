@@ -17,13 +17,20 @@ type MaterialRepository struct {
 	Storage *Storage
 }
 
+// materialColumns 是材料查询的统一列（含索引状态，无状态行按 pending）。
+const materialColumns = `h.id, h.class_id, h.uploader_user_id, h.original_name, h.stored_path,
+		        h.file_type, h.size_bytes, COALESCE(u.display_name, '系统'), h.created_at,
+		        COALESCE(mi.status, 'pending')`
+
+// materialFrom 是材料查询的统一 FROM/JOIN 子句。
+const materialFrom = ` FROM handouts h
+		   LEFT JOIN users u ON u.id = h.uploader_user_id
+		   LEFT JOIN material_index mi ON mi.handout_id = h.id`
+
 // ListByClass 返回某班级的全部讲义（服务端班级过滤的落地点之一）。
 func (r *MaterialRepository) ListByClass(ctx context.Context, classID int64) ([]model.Material, error) {
 	rows, err := r.DB.QueryContext(ctx,
-		`SELECT h.id, h.class_id, h.uploader_user_id, h.original_name, h.stored_path,
-		        h.file_type, h.size_bytes, COALESCE(u.display_name, '系统'), h.created_at
-		   FROM handouts h
-		   LEFT JOIN users u ON u.id = h.uploader_user_id
+		`SELECT `+materialColumns+materialFrom+`
 		  WHERE h.class_id = ?
 		  ORDER BY h.created_at DESC, h.id DESC`,
 		classID)
@@ -46,10 +53,7 @@ func (r *MaterialRepository) ListByClass(ctx context.Context, classID int64) ([]
 // GetByID 按主键取讲义；不存在返回 sql.ErrNoRows。
 func (r *MaterialRepository) GetByID(ctx context.Context, id int64) (*model.Material, error) {
 	row := r.DB.QueryRowContext(ctx,
-		`SELECT h.id, h.class_id, h.uploader_user_id, h.original_name, h.stored_path,
-		        h.file_type, h.size_bytes, COALESCE(u.display_name, '系统'), h.created_at
-		   FROM handouts h
-		   LEFT JOIN users u ON u.id = h.uploader_user_id
+		`SELECT `+materialColumns+materialFrom+`
 		  WHERE h.id = ?`,
 		id)
 	m, err := scanMaterial(row)
@@ -115,7 +119,7 @@ type rowScanner interface {
 func scanMaterial(s rowScanner) (model.Material, error) {
 	var m model.Material
 	err := s.Scan(&m.ID, &m.ClassID, &m.UploaderUserID, &m.OriginalName, &m.StoredPath,
-		&m.FileType, &m.SizeBytes, &m.UploaderName, &m.CreatedAt)
+		&m.FileType, &m.SizeBytes, &m.UploaderName, &m.CreatedAt, &m.IndexStatus)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return model.Material{}, err
 	}

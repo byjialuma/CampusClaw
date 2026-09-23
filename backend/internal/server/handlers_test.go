@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,6 +172,26 @@ func (f *fakeTickets) Consume(_ context.Context, token string) (*model.Ticket, e
 }
 
 func (f *fakeTickets) DeleteExpired(_ context.Context) error { return nil }
+
+// fakeIndexQueue 记录入队的 handout_id，可注入故障。
+type fakeIndexQueue struct {
+	mu       sync.Mutex
+	enqueued []int64
+	err      error
+}
+
+func (q *fakeIndexQueue) Enqueue(_ context.Context, id int64) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.enqueued = append(q.enqueued, id)
+	return q.err
+}
+
+func (q *fakeIndexQueue) ids() []int64 {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return append([]int64(nil), q.enqueued...)
+}
 
 // ---------- 测试辅助 ----------
 
@@ -335,6 +356,7 @@ func TestProtectedEndpointsRequireSession(t *testing.T) {
 	srv, _ := newTestServer(t)
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodGet, "/api/me"},
+		{http.MethodGet, "/api/search?q=x"},
 		{http.MethodGet, "/api/materials"},
 		{http.MethodGet, "/api/materials/1/content"},
 		{http.MethodPost, "/api/materials/1/download-ticket"},
@@ -514,7 +536,9 @@ func TestTeacherUploadValidationAndList(t *testing.T) {
 
 	// 本班列表立即出现；B 班列表不出现。
 	resp, _ = client.Get(srv.URL + "/api/materials")
-	var list struct{ Materials []model.Material `json:"materials"` }
+	var list struct {
+		Materials []model.Material `json:"materials"`
+	}
 	json.NewDecoder(resp.Body).Decode(&list)
 	resp.Body.Close()
 	found := false
@@ -529,7 +553,9 @@ func TestTeacherUploadValidationAndList(t *testing.T) {
 
 	b1 := loginJarClient(t, srv.URL, "studentB1", "b1-pw")
 	resp, _ = b1.Get(srv.URL + "/api/materials")
-	var listB struct{ Materials []model.Material `json:"materials"` }
+	var listB struct {
+		Materials []model.Material `json:"materials"`
+	}
 	json.NewDecoder(resp.Body).Decode(&listB)
 	resp.Body.Close()
 	for _, m := range listB.Materials {
@@ -537,6 +563,48 @@ func TestTeacherUploadValidationAndList(t *testing.T) {
 			t.Fatal("外班列表不得出现新上传材料")
 		}
 	}
+}
+
+// 上传成功后必须把新材料异步入索引队列；非法文件与入队故障都不影响 201/4xx 语义。
+func TestTeacherUploadEnqueuesIndex(t *testing.T) {
+	api := newTestAPI()
+	queue := &fakeIndexQueue{}
+	api.Indexer = queue
+	srv := httptest.NewServer(api.NewHandler())
+	t.Cleanup(srv.Close)
+	client := loginJarClient(t, srv.URL, "teacherA", "ta-pw")
+
+	// 非法上传不入队。
+	buf, ct := uploadRequest(t, "file", "bad.docx", []byte("x"))
+	resp, _ := client.Post(srv.URL+"/api/materials", ct, buf)
+	resp.Body.Close()
+	if len(queue.ids()) != 0 {
+		t.Fatal("非法文件不得入索引队列")
+	}
+
+	// 合法上传 201 且入队一次，ID 与返回材料一致。
+	buf, ct = uploadRequest(t, "file", "可检索讲义.txt", []byte("集合的确定性内容"))
+	resp, _ = client.Post(srv.URL+"/api/materials", ct, buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("期望 201，得到 %d", resp.StatusCode)
+	}
+	var created model.Material
+	json.NewDecoder(resp.Body).Decode(&created)
+	resp.Body.Close()
+
+	ids := queue.ids()
+	if len(ids) != 1 || ids[0] != created.ID {
+		t.Fatalf("应恰好入队新材料 %d，实际 %v", created.ID, ids)
+	}
+
+	// 入队本身失败（如队列满）不得拖垮上传响应。
+	queue.err = errors.New("queue full")
+	buf, ct = uploadRequest(t, "file", "第二份.txt", []byte("更多内容"))
+	resp, _ = client.Post(srv.URL+"/api/materials", ct, buf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("入队故障时上传仍应 201，得到 %d", resp.StatusCode)
+	}
+	resp.Body.Close()
 }
 
 // ---------- 一次性票据下载 ----------

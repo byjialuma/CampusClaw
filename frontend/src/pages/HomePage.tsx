@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { createTicket, fetchMaterials, fetchMe } from '../api'
-import type { Material, Me } from '../types'
+import { createTicket, fetchMaterials, fetchMe, searchMaterials } from '../api'
+import type { Locator, Material, Me, SearchResult } from '../types'
 import TopBar from '../components/TopBar'
 import UploadPanel from '../components/UploadPanel'
+import SearchPanel from '../components/SearchPanel'
+import SearchResults from '../components/SearchResults'
 import MaterialList from '../components/MaterialList'
 import Preview from '../components/Preview'
 
@@ -12,6 +14,14 @@ export default function HomePage() {
   const [selected, setSelected] = useState<Material | null>(null)
   const [loading, setLoading] = useState(true)
   const [downloadError, setDownloadError] = useState('')
+
+  // 右栏在「材料预览」与「检索结果」两个视图间切换。
+  const [view, setView] = useState<'preview' | 'results'>('preview')
+  const [searching, setSearching] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [searchError, setSearchError] = useState('')
+  const [locatorHint, setLocatorHint] = useState<Locator | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -33,6 +43,36 @@ export default function HomePage() {
       cancelled = true
     }
   }, [])
+
+  async function handleSearch(query: string) {
+    setSearchQuery(query)
+    setSearching(true)
+    setSearchError('')
+    setSearchResults([])
+    setView('results')
+    try {
+      setSearchResults(await searchMaterials(query))
+    } catch (err) {
+      setSearchError(err instanceof Error ? err.message : '知识库检索暂不可用')
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  function handleViewMaterial(m: Material) {
+    setLocatorHint(null)
+    setSelected(m)
+    setView('preview')
+  }
+
+  // 点击检索结果徽标：只能在本班材料列表内定位；找不到对应材料时不发请求、不报错。
+  function handleOpenSource(r: SearchResult) {
+    const target = materials.find((m) => m.id === r.documentId)
+    if (!target) return
+    setSelected(target)
+    setLocatorHint(r.locator)
+    setView('preview')
+  }
 
   async function handleDownload(m: Material) {
     setDownloadError('')
@@ -60,18 +100,34 @@ export default function HomePage() {
       <TopBar me={me} />
       <main className="layout">
         <aside className="left-pane">
+          <SearchPanel searching={searching} onSearch={handleSearch} />
           <UploadPanel onUploaded={(m) => setMaterials((prev) => [m, ...prev])} />
           {downloadError && <div className="alert alert-error">{downloadError}</div>}
           <MaterialList
             materials={materials}
             selectedId={selected?.id ?? null}
             loading={loading}
-            onView={setSelected}
+            onView={handleViewMaterial}
             onDownload={handleDownload}
           />
         </aside>
         <section className="right-pane">
-          <Preview material={selected} />
+          {view === 'results' ? (
+            <SearchResults
+              query={searchQuery}
+              results={searchResults}
+              searching={searching}
+              error={searchError}
+              onOpenSource={handleOpenSource}
+              onBack={() => setView('preview')}
+            />
+          ) : (
+            <Preview
+              material={selected}
+              locatorHint={locatorHint}
+              onClearHint={() => setLocatorHint(null)}
+            />
+          )}
         </section>
       </main>
     </div>

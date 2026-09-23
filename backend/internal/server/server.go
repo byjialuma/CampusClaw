@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"campusclaw/internal/model"
+	searchpkg "campusclaw/internal/search"
 )
 
 // SessionCookie 是服务端会话 Cookie 名称。
@@ -42,12 +43,30 @@ type pinger interface {
 	PingContext(ctx context.Context) error
 }
 
+// indexQueue 是上传成功后异步入队的最小能力（*indexer.Queue 满足）。
+type indexQueue interface {
+	Enqueue(ctx context.Context, handoutID int64) error
+}
+
+// vectorPinger 是健康检查所需的向量库探测能力（*vector.Client 满足）。
+type vectorPinger interface {
+	Ping(ctx context.Context) error
+}
+
+// knowledgeSearcher 是班级内语义检索能力（*search.Service 满足）。
+type knowledgeSearcher interface {
+	Search(ctx context.Context, query string, classID int64) ([]searchpkg.Result, error)
+}
+
 // API 持有全部处理函数共享的依赖。
 type API struct {
 	Users      userService
 	Materials  materialService
 	Tickets    ticketService
 	DB         pinger
+	Indexer    indexQueue
+	Vectors    vectorPinger
+	SearchSvc  knowledgeSearcher
 	SessionTTL time.Duration
 }
 
@@ -60,6 +79,8 @@ func (a *API) NewHandler() http.Handler {
 	mux.HandleFunc("POST /api/sessions", a.login)
 	mux.HandleFunc("DELETE /api/sessions", a.requireAuth(a.logout))
 	mux.HandleFunc("GET /api/me", a.requireAuth(a.me))
+
+	mux.HandleFunc("GET /api/search", a.requireAuth(a.searchKnowledge))
 
 	mux.HandleFunc("GET /api/materials", a.requireAuth(a.listMaterials))
 	mux.HandleFunc("POST /api/materials", a.requireAuth(a.requireTeacher(a.uploadMaterial)))

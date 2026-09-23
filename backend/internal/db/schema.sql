@@ -1,5 +1,5 @@
 -- CampusClaw 核心结构（由 MySQL 初始化目录执行；Go 后端启动时以同一份文件幂等兜底）
--- 共八张表：班级、用户、讲义、作业、助手、技能、服务端会话、一次性下载票据
+-- 共九张表：班级、用户、讲义、作业、助手、技能、服务端会话、一次性下载票据、材料向量索引状态
 
 CREATE TABLE IF NOT EXISTS classes (
   id         BIGINT       NOT NULL AUTO_INCREMENT,
@@ -97,4 +97,17 @@ CREATE TABLE IF NOT EXISTS download_tickets (
   CONSTRAINT fk_tickets_handout FOREIGN KEY (handout_id) REFERENCES handouts (id) ON DELETE CASCADE,
   CONSTRAINT fk_tickets_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
   CONSTRAINT fk_tickets_class FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- 材料向量索引状态：分片正文与向量存 Qdrant，MySQL 仅记录每份讲义的索引生命周期。
+CREATE TABLE IF NOT EXISTS material_index (
+  handout_id  BIGINT       NOT NULL,
+  status      ENUM('pending', 'ready', 'failed') NOT NULL DEFAULT 'pending',
+  chunk_count INT          NOT NULL DEFAULT 0,
+  error       VARCHAR(512) NULL,
+  indexed_at  DATETIME(3)  NULL,
+  updated_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (handout_id),
+  KEY idx_material_index_status (status),
+  CONSTRAINT fk_material_index_handout FOREIGN KEY (handout_id) REFERENCES handouts (id) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
