@@ -710,3 +710,278 @@ body {
 .qa-citations {
   margin-top: 8px;
 }
+
+/* ---------- 解题助手：入口与左栏 ---------- */
+
+.tutor-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.tutor-entry-text .card-title {
+  margin-bottom: 4px;
+}
+.tutor-entry-text .file-hint {
+  margin-top: 0;
+}
+
+.assistant-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.assistant-panel-head .card-title {
+  margin: 0;
+}
+.conversation-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.conversation-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--card-border);
+  background: #fff;
+  border-radius: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+.conversation-item:hover {
+  border-color: var(--pku-red-border);
+  background: var(--pku-red-light);
+}
+.conversation-item.active {
+  border-color: var(--pku-red);
+  background: var(--pku-red-light);
+}
+.conversation-title {
+  font-size: 13.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-time {
+  flex: none;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+/* ---------- 教师助手设置 ---------- */
+
+.assistant-settings {
+  flex: none;
+  margin-bottom: 12px;
+  border-top: 1px dashed var(--card-border);
+  padding-top: 14px;
+}
+.assistant-settings .card-title {
+  margin-bottom: 10px;
+}
+.settings-label {
+  display: block;
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin: 0 0 6px;
+}
+.settings-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 84px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  font-family: inherit;
+  color: var(--ink);
+}
+.settings-textarea:focus {
+  outline: none;
+  border-color: var(--pku-red);
+  box-shadow: 0 0 0 2px rgba(148, 7, 10, 0.12);
+}
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.settings-skills {
+  margin-top: 14px;
+}
+.skill-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-top: 8px;
+  cursor: pointer;
+}
+.skill-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.skill-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.skill-desc {
+  font-size: 12px;
+}
+.skill-switch {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--pku-red);
+  cursor: pointer;
+}
+.skill-state {
+  flex: none;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.skill-state.on {
+  color: var(--pku-red-dark);
+  font-weight: 600;
+}
+
+/* ---------- 助手会话视图 ---------- */
+
+.tutor-view {
+  padding: 16px 18px;
+}
+.tutor-head .card-title {
+  margin: 0;
+}
+.tutor-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tutor-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 2px 10px;
+}
+.tutor-empty-hint {
+  text-align: center;
+  margin-top: 24px;
+}
+.tutor-message {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tutor-message-user {
+  align-items: flex-end;
+}
+.tutor-message-assistant {
+  align-items: stretch;
+}
+.tutor-bubble {
+  max-width: 82%;
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+.tutor-message-user .tutor-bubble {
+  background: var(--pku-red);
+  color: #fff;
+}
+.tutor-message-assistant .tutor-bubble {
+  background: var(--pku-red-light);
+  border: 1px solid var(--pku-red-border);
+  max-width: 100%;
+}
+.tutor-text {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tutor-placeholder {
+  color: var(--ink-soft);
+}
+.tutor-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  margin-left: 2px;
+  background: var(--pku-red);
+  vertical-align: -2px;
+  animation: tutor-blink 0.9s steps(1) infinite;
+}
+@keyframes tutor-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}
+.tutor-citation-chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tutor-citation-chip {
+  border: 1px solid var(--pku-red-border);
+  background: var(--pku-red-light);
+  color: var(--pku-red-dark);
+  border-radius: 8px;
+  padding: 3px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tutor-citation-chip:hover {
+  background: var(--pku-red);
+  border-color: var(--pku-red);
+  color: #fff;
+}
+.tutor-stream-error {
+  margin: 0;
+}
+.tutor-input-row {
+  flex: none;
+  display: flex;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--card-border);
+}
+.tutor-input {
+  flex: 1;
+}

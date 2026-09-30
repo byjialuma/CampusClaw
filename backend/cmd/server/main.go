@@ -23,6 +23,7 @@ import (
 	"campusclaw/internal/seed"
 	"campusclaw/internal/server"
 	"campusclaw/internal/store"
+	"campusclaw/internal/tutor"
 	"campusclaw/internal/vector"
 )
 
@@ -117,6 +118,16 @@ func main() {
 		TopK:     cfg.Qdrant.TopK,
 	}
 
+	// 解题助手：复用同一 Embedder/向量库/LLM，仓储独立。
+	tutorRepo := &tutor.TutorRepository{DB: database}
+	tutorSvc := &tutor.Service{
+		Repo:     tutorRepo,
+		Embedder: embedder,
+		Vectors:  vectors,
+		LLM:      llmClient,
+		TopK:     cfg.Qdrant.TopK,
+	}
+
 	api := &server.API{
 		Users:     &auth.Repository{DB: database},
 		JWT:       jwtSvc,
@@ -130,7 +141,9 @@ func main() {
 			Vectors:  vectors,
 			TopK:     cfg.Qdrant.TopK,
 		},
-		QASvc: qaSvc,
+		QASvc:      qaSvc,
+		Tutor:      tutorSvc,
+		TutorStore: tutorRepo,
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

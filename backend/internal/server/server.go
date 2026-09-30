@@ -69,15 +69,17 @@ type qaService interface {
 
 // API 持有全部处理函数共享的依赖。
 type API struct {
-	Users     userAuthenticator
-	JWT       jwtVerifier
-	Materials materialService
-	Tickets   ticketService
-	DB        pinger
-	Indexer   indexQueue
-	Vectors   vectorPinger
-	SearchSvc knowledgeSearcher
-	QASvc     qaService
+	Users      userAuthenticator
+	JWT        jwtVerifier
+	Materials  materialService
+	Tickets    ticketService
+	DB         pinger
+	Indexer    indexQueue
+	Vectors    vectorPinger
+	SearchSvc  knowledgeSearcher
+	QASvc      qaService
+	Tutor      tutorAsker
+	TutorStore tutorStore
 }
 
 // NewHandler 构建路由树：鉴权在各路由上显式包装。
@@ -92,6 +94,15 @@ func (a *API) NewHandler() http.Handler {
 
 	mux.HandleFunc("GET /api/search", a.requireAuth(a.searchKnowledge))
 	mux.HandleFunc("POST /api/qa", a.requireAuth(a.askQuestion))
+
+	// 解题助手：会话/消息/SSE 提问（登录即可），提示词与技能管理（仅教师）。
+	mux.HandleFunc("POST /api/tutor/conversations", a.requireAuth(a.createTutorConversation))
+	mux.HandleFunc("GET /api/tutor/conversations", a.requireAuth(a.listTutorConversations))
+	mux.HandleFunc("GET /api/tutor/conversations/{id}/messages", a.requireAuth(a.getTutorMessages))
+	mux.HandleFunc("POST /api/tutor/conversations/{id}/messages", a.requireAuth(a.askTutor))
+	mux.HandleFunc("GET /api/tutor/assistant", a.requireAuth(a.requireTeacher(a.getTutorAssistant)))
+	mux.HandleFunc("PUT /api/tutor/assistant/prompt", a.requireAuth(a.requireTeacher(a.saveTutorPrompt)))
+	mux.HandleFunc("PUT /api/tutor/assistant/skills/{id}", a.requireAuth(a.requireTeacher(a.putTutorSkill)))
 
 	mux.HandleFunc("GET /api/materials", a.requireAuth(a.listMaterials))
 	mux.HandleFunc("POST /api/materials", a.requireAuth(a.requireTeacher(a.uploadMaterial)))

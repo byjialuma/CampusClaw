@@ -26,7 +26,8 @@ type openAIClient struct {
 }
 
 // NewOpenAIClient 创建 Chat Completions 客户端。baseURL 不应以斜杠结尾。
-func NewOpenAIClient(baseURL, apiKey, model string, timeout time.Duration) LLM {
+// 返回具体类型 *openAIClient：它同时满足 LLM 与 StreamLLM 两个接口。
+func NewOpenAIClient(baseURL, apiKey, model string, timeout time.Duration) *openAIClient {
 	return &openAIClient{
 		baseURL: baseURL,
 		apiKey:  apiKey,
@@ -35,18 +36,19 @@ func NewOpenAIClient(baseURL, apiKey, model string, timeout time.Duration) LLM {
 	}
 }
 
-// chatMessage 是 OpenAI 协议中的一条消息。
-type chatMessage struct {
+// Message 是 OpenAI 协议中的一条消息（Ask 与 StreamAsk 共用）。
+type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
 // chatRequest 是 OpenAI 兼容协议的请求体。
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Temperature float64   `json:"temperature,omitempty"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Stream      bool      `json:"stream,omitempty"`
 }
 
 // chatResponse 是 OpenAI 兼容协议的响应体。
@@ -64,30 +66,34 @@ type chatResponse struct {
 // systemPrompt 约束模型只基于提供的材料片段回答。
 const systemPrompt = `你是一个班级知识库助教。你只能基于下面提供的材料片段回答问题。如果片段不足以回答，请明确说明"根据已有材料无法回答该问题"。回答必须基于中文，简洁准确。`
 
+// sendChat 构造并发送 Chat Completions 请求（Ask 与 StreamAsk 共用，零重复漂移）。
+func (c *openAIClient) sendChat(ctx context.Context, body chatRequest) (*http.Response, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("构造请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	return c.http.Do(req)
+}
+
 // Ask 发送 prompt 到 Chat Completions 端点并解析回答。
 func (c *openAIClient) Ask(ctx context.Context, prompt string) (string, error) {
-	body := chatRequest{
+	resp, err := c.sendChat(ctx, chatRequest{
 		Model: c.model,
-		Messages: []chatMessage{
+		Messages: []Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: prompt},
 		},
 		Temperature: 0.3,
 		MaxTokens:   1024,
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return "", fmt.Errorf("序列化请求失败: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return "", fmt.Errorf("构造请求失败: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.http.Do(req)
+	})
 	if err != nil {
 		return "", fmt.Errorf("请求 LLM 服务失败: %w", err)
 	}
@@ -99,11 +105,7 @@ func (c *openAIClient) Ask(ctx context.Context, prompt string) (string, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var out chatResponse
-		if json.Unmarshal(bodyBytes, &out) == nil && out.Error != nil && out.Error.Message != "" {
-			return "", fmt.Errorf("LLM 服务返回错误: %s", out.Error.Message)
-		}
-		return "", fmt.Errorf("LLM 服务返回 HTTP %d", resp.StatusCode)
+		return "", responseError(resp.StatusCode, bodyBytes)
 	}
 
 	var out chatResponse
@@ -120,4 +122,13 @@ func (c *openAIClient) Ask(ctx context.Context, prompt string) (string, error) {
 		return "", fmt.Errorf("LLM 响应内容为空")
 	}
 	return content, nil
+}
+
+// responseError 从非 200 响应中提取网关错误信息（Ask 与 StreamAsk 共用）。
+func responseError(status int, bodyBytes []byte) error {
+	var out chatResponse
+	if json.Unmarshal(bodyBytes, &out) == nil && out.Error != nil && out.Error.Message != "" {
+		return fmt.Errorf("LLM 服务返回错误: %s", out.Error.Message)
+	}
+	return fmt.Errorf("LLM 服务返回 HTTP %d", status)
 }

@@ -1,5 +1,6 @@
 -- CampusClaw 核心结构（由 MySQL 初始化目录执行；Go 后端启动时以同一份文件幂等兜底）
--- 共九张表：班级、用户、讲义、作业、助手、技能、服务端会话、一次性下载票据、材料向量索引状态
+-- 共十一张表：班级、用户、讲义、作业、助手、技能、服务端会话、一次性下载票据、材料向量索引状态、
+--             助手会话、助手消息
 
 CREATE TABLE IF NOT EXISTS classes (
   id         BIGINT       NOT NULL AUTO_INCREMENT,
@@ -51,11 +52,12 @@ CREATE TABLE IF NOT EXISTS assignments (
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS assistants (
-  id          BIGINT       NOT NULL AUTO_INCREMENT,
-  class_id    BIGINT       NOT NULL,
-  name        VARCHAR(64)  NOT NULL,
-  description VARCHAR(255) NULL,
-  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  id            BIGINT       NOT NULL AUTO_INCREMENT,
+  class_id      BIGINT       NOT NULL,
+  name          VARCHAR(64)  NOT NULL,
+  description   VARCHAR(255) NULL,
+  system_prompt TEXT         NULL,
+  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_assistants_class (class_id),
   CONSTRAINT fk_assistants_class FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
@@ -66,6 +68,7 @@ CREATE TABLE IF NOT EXISTS skills (
   assistant_id BIGINT       NOT NULL,
   name         VARCHAR(64)  NOT NULL,
   description  VARCHAR(255) NULL,
+  enabled      TINYINT(1)   NOT NULL DEFAULT 0,
   created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_skills_assistant (assistant_id),
@@ -110,4 +113,32 @@ CREATE TABLE IF NOT EXISTS material_index (
   PRIMARY KEY (handout_id),
   KEY idx_material_index_status (status),
   CONSTRAINT fk_material_index_handout FOREIGN KEY (handout_id) REFERENCES handouts (id) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- 助手会话：学生与解题助手的多轮对话容器，归属唯一学生。
+CREATE TABLE IF NOT EXISTS conversations (
+  id         BIGINT       NOT NULL AUTO_INCREMENT,
+  class_id   BIGINT       NOT NULL,
+  user_id    BIGINT       NOT NULL,
+  title      VARCHAR(255) NOT NULL,
+  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_conversations_user (user_id, id),
+  CONSTRAINT fk_conversations_user  FOREIGN KEY (user_id)  REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_conversations_class FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- 助手消息：每轮提问与回答；assistant 轮记录引用、当时的提示词快照与技能状态。
+CREATE TABLE IF NOT EXISTS messages (
+  id              BIGINT       NOT NULL AUTO_INCREMENT,
+  conversation_id BIGINT       NOT NULL,
+  role            ENUM('user','assistant') NOT NULL,
+  content         MEDIUMTEXT   NOT NULL,
+  citations       JSON         NULL,
+  prompt_used     TEXT         NULL,
+  skill_enabled   TINYINT(1)   NULL,
+  created_at      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_messages_conversation (conversation_id, id),
+  CONSTRAINT fk_messages_conversation FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;

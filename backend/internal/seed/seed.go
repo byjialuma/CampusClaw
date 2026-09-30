@@ -20,8 +20,12 @@ const (
 	classBName = "B班"
 
 	assignmentTitle = "第一次作业（种子示例，暂不开放提交）"
-	assistantName   = "课程助手（种子示例，暂不开放对话）"
-	skillName       = "讲义检索技能（种子示例，暂不执行）"
+
+	// 每班一个解题助手，教师可在助教设置页改写提示词与开关解题引导。
+	assistantName       = "解题助手"
+	defaultSystemPrompt = "你是本班解题助教，结合班级材料引导学生自主解题，用中文，简洁准确。"
+	tutorSkillName      = "解题引导"
+	tutorSkillDesc      = "开启时给出解题思路与步骤引导，引用本班材料的标题与位置，不直接给出最终答案。"
 )
 
 // seedMaterial 描述一个预置讲义文件与所属班级。
@@ -175,9 +179,10 @@ func ensureAssistant(ctx context.Context, db *sql.DB, classID int64, className s
 		classID, name).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		res, insErr := db.ExecContext(ctx,
-			`INSERT INTO assistants (class_id, name, description) VALUES (?, ?, ?)`,
+			`INSERT INTO assistants (class_id, name, description, system_prompt) VALUES (?, ?, ?, ?)`,
 			classID, name,
-			"预置助手数据结构示例，本课程变更不实现对话。")
+			"班级解题助手：结合提示词、解题引导技能与本班知识库回答学生提问。",
+			defaultSystemPrompt)
 		if insErr != nil {
 			return 0, insErr
 		}
@@ -190,11 +195,11 @@ func ensureSkill(ctx context.Context, db *sql.DB, assistantID int64) error {
 	var id int64
 	err := db.QueryRowContext(ctx,
 		`SELECT id FROM skills WHERE assistant_id = ? AND name = ?`,
-		assistantID, skillName).Scan(&id)
+		assistantID, tutorSkillName).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = db.ExecContext(ctx,
-			`INSERT INTO skills (assistant_id, name, description) VALUES (?, ?, ?)`,
-			assistantID, skillName, "预置技能数据结构示例，本课程变更不提供执行引擎。")
+			`INSERT INTO skills (assistant_id, name, description, enabled) VALUES (?, ?, ?, 1)`,
+			assistantID, tutorSkillName, tutorSkillDesc)
 	}
 	return err
 }

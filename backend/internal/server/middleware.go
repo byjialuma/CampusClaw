@@ -57,6 +57,14 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Flush 透传到底层 ResponseWriter 的 Flusher；
+// 不显式声明会导致包装器隐藏 http.Flusher，SSE 流式能力失效。
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // logRequests 是最外层访问日志中间件。
 func logRequests(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
