@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"campusclaw/internal/model"
+	qapkg "campusclaw/internal/qa"
 	"campusclaw/internal/store"
 )
 
@@ -194,6 +195,19 @@ func (q *fakeIndexQueue) ids() []int64 {
 	return append([]int64(nil), q.enqueued...)
 }
 
+// fakeQA 是知识问答的测试替身。
+type fakeQA struct {
+	result *qapkg.Result
+	err    error
+}
+
+func (f *fakeQA) Ask(_ context.Context, question string, classID int64) (*qapkg.Result, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.result, nil
+}
+
 // ---------- 测试辅助 ----------
 
 func newTestAPI() *API {
@@ -203,6 +217,7 @@ func newTestAPI() *API {
 		Materials: newFakeMaterials(),
 		Tickets:   &fakeTickets{tickets: map[string]*model.Ticket{}},
 		DB:        &fakePinger{},
+		QASvc:     &fakeQA{result: &qapkg.Result{Answer: "test answer", Citations: []qapkg.Citation{}}},
 	}
 }
 
@@ -690,5 +705,130 @@ func TestDownloadTicketFlow(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("缺少票据期望 401，得到 %d", resp.StatusCode)
+	}
+}
+
+// ---------- 知识问答 ----------
+
+func TestQAUnauthorized(t *testing.T) {
+	srv, _ := newTestServer(t)
+	body, _ := json.Marshal(map[string]string{"question": "什么是集合？"})
+	resp, _ := http.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("未认证访问 /api/qa 期望 401，得到 %d", resp.StatusCode)
+	}
+}
+
+func TestQAEmptyQuestion(t *testing.T) {
+	srv, _ := newTestServer(t)
+	client := loginJarClient(t, srv.URL, "teacherA", "ta-pw")
+	body, _ := json.Marshal(map[string]string{"question": ""})
+	resp, _ := client.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("空问题期望 400，得到 %d", resp.StatusCode)
+	}
+}
+
+func TestQASuccess(t *testing.T) {
+	srv, api := newTestServer(t)
+	client := loginJarClient(t, srv.URL, "teacherA", "ta-pw")
+
+	api.QASvc = &fakeQA{result: &qapkg.Result{
+		Answer: "集合是数学中的基本概念。",
+		Citations: []qapkg.Citation{
+			{
+				DocumentID: 1,
+				FileName:   "A班种子讲义.txt",
+				FileType:   "txt",
+				Snippet:    "集合是数学的基本概念...",
+				Locator:    model.Locator{Kind: model.LocatorLines, StartLine: 1, EndLine: 5},
+				Score:      0.9,
+			},
+		},
+	}}
+
+	body, _ := json.Marshal(map[string]string{"question": "什么是集合？"})
+	resp, _ := client.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("问答期望 200，得到 %d", resp.StatusCode)
+	}
+	var result qapkg.Result
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if result.Answer != "集合是数学中的基本概念。" {
+		t.Fatalf("回答内容错误: %q", result.Answer)
+	}
+	if len(result.Citations) != 1 {
+		t.Fatalf("引用数量错误: %d", len(result.Citations))
+	}
+	if result.Citations[0].DocumentID != 1 || result.Citations[0].FileName != "A班种子讲义.txt" {
+		t.Fatalf("引用内容错误: %+v", result.Citations[0])
+	}
+	if result.Citations[0].Snippet != "集合是数学的基本概念..." {
+		t.Fatalf("引用 snippet 错误: %q", result.Citations[0].Snippet)
+	}
+}
+
+func TestQACrossClass(t *testing.T) {
+	srv, api := newTestServer(t)
+	client := loginJarClient(t, srv.URL, "studentA1", "a1-pw")
+
+	// 模拟 QA 服务只返回 A 班引用。
+	api.QASvc = &fakeQA{result: &qapkg.Result{
+		Answer: "A 班专属回答",
+		Citations: []qapkg.Citation{
+			{
+				DocumentID: 1,
+				FileName:   "A班种子讲义.txt",
+				FileType:   "txt",
+				Snippet:    "集合是数学的基本概念...",
+				Locator:    model.Locator{Kind: model.LocatorLines, StartLine: 1, EndLine: 5},
+				Score:      0.9,
+			},
+		},
+	}}
+
+	body, _ := json.Marshal(map[string]string{"question": "什么是集合？"})
+	resp, _ := client.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("问答期望 200，得到 %d", resp.StatusCode)
+	}
+	var result qapkg.Result
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	// 断言所有引用都属于 A 班（documentID 1 是 A 班材料）。
+	for _, c := range result.Citations {
+		if c.DocumentID != 1 {
+			t.Fatalf("A 班用户问答结果引用不应包含外班材料: %+v", c)
+		}
+	}
+}
+
+func TestQALLMUnavailable(t *testing.T) {
+	srv, api := newTestServer(t)
+	client := loginJarClient(t, srv.URL, "teacherA", "ta-pw")
+
+	api.QASvc = &fakeQA{err: errors.New("LLM 服务不可用")}
+
+	body, _ := json.Marshal(map[string]string{"question": "什么是集合？"})
+	resp, _ := client.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("LLM 失败期望 503，得到 %d", resp.StatusCode)
+	}
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+		t.Fatalf("解析错误响应失败: %v", err)
+	}
+	if errResp.Error != "知识库问答暂不可用" {
+		t.Fatalf("错误文案错误: %q", errResp.Error)
 	}
 }

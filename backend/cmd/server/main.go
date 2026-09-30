@@ -17,6 +17,8 @@ import (
 	"campusclaw/internal/db"
 	"campusclaw/internal/embedding"
 	"campusclaw/internal/indexer"
+	"campusclaw/internal/llm"
+	"campusclaw/internal/qa"
 	"campusclaw/internal/search"
 	"campusclaw/internal/seed"
 	"campusclaw/internal/server"
@@ -107,6 +109,14 @@ func main() {
 		log.Fatalf("初始化 JWT 服务失败: %v", err)
 	}
 
+	llmClient := llm.NewOpenAIClient(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Timeout)
+	qaSvc := &qa.Service{
+		Embedder: embedder,
+		Vectors:  vectors,
+		LLM:      llmClient,
+		TopK:     cfg.Qdrant.TopK,
+	}
+
 	api := &server.API{
 		Users:     &auth.Repository{DB: database},
 		JWT:       jwtSvc,
@@ -120,6 +130,7 @@ func main() {
 			Vectors:  vectors,
 			TopK:     cfg.Qdrant.TopK,
 		},
+		QASvc: qaSvc,
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

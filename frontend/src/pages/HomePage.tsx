@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
-import { createTicket, fetchMaterials, fetchMe, getToken, searchMaterials } from '../api'
-import type { Locator, Material, Me, SearchResult } from '../types'
+import { askQuestion, createTicket, fetchMaterials, fetchMe, getToken, searchMaterials } from '../api'
+import type { Citation, Locator, Material, Me, QAResult, SearchResult } from '../types'
 import TopBar from '../components/TopBar'
 import UploadPanel from '../components/UploadPanel'
 import SearchPanel from '../components/SearchPanel'
+import QAPanel from '../components/QAPanel'
 import SearchResults from '../components/SearchResults'
+import QAResults from '../components/QAResults'
 import MaterialList from '../components/MaterialList'
 import Preview from '../components/Preview'
 
@@ -15,13 +17,20 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true)
   const [downloadError, setDownloadError] = useState('')
 
-  // 右栏在「材料预览」与「检索结果」两个视图间切换。
-  const [view, setView] = useState<'preview' | 'results'>('preview')
+  // 右栏在「材料预览」「检索结果」「问答结果」三个视图间切换。
+  const [view, setView] = useState<'preview' | 'results' | 'qa'>('preview')
   const [searching, setSearching] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchError, setSearchError] = useState('')
   const [locatorHint, setLocatorHint] = useState<Locator | null>(null)
+
+  // 问答状态
+  const [qaLoading, setQaLoading] = useState(false)
+  const [qaQuestion, setQaQuestion] = useState('')
+  const [qaAnswer, setQaAnswer] = useState('')
+  const [qaCitations, setQaCitations] = useState<Citation[]>([])
+  const [qaError, setQaError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -63,6 +72,24 @@ export default function HomePage() {
     }
   }
 
+  async function handleAsk(question: string) {
+    setQaQuestion(question)
+    setQaLoading(true)
+    setQaError('')
+    setQaAnswer('')
+    setQaCitations([])
+    setView('qa')
+    try {
+      const result: QAResult = await askQuestion(question)
+      setQaAnswer(result.answer)
+      setQaCitations(result.citations)
+    } catch (err) {
+      setQaError(err instanceof Error ? err.message : '知识库问答暂不可用')
+    } finally {
+      setQaLoading(false)
+    }
+  }
+
   function handleViewMaterial(m: Material) {
     setLocatorHint(null)
     setSelected(m)
@@ -75,6 +102,15 @@ export default function HomePage() {
     if (!target) return
     setSelected(target)
     setLocatorHint(r.locator)
+    setView('preview')
+  }
+
+  // 点击问答引用徽标：打开对应材料预览。
+  function handleOpenCitation(c: Citation) {
+    const target = materials.find((m) => m.id === c.documentId)
+    if (!target) return
+    setSelected(target)
+    setLocatorHint(c.locator)
     setView('preview')
   }
 
@@ -105,6 +141,7 @@ export default function HomePage() {
       <main className="layout">
         <aside className="left-pane">
           <SearchPanel searching={searching} onSearch={handleSearch} />
+          <QAPanel loading={qaLoading} onAsk={handleAsk} />
           <UploadPanel onUploaded={(m) => setMaterials((prev) => [m, ...prev])} />
           {downloadError && <div className="alert alert-error">{downloadError}</div>}
           <MaterialList
@@ -123,6 +160,16 @@ export default function HomePage() {
               searching={searching}
               error={searchError}
               onOpenSource={handleOpenSource}
+              onBack={() => setView('preview')}
+            />
+          ) : view === 'qa' ? (
+            <QAResults
+              question={qaQuestion}
+              answer={qaAnswer}
+              citations={qaCitations}
+              loading={qaLoading}
+              error={qaError}
+              onOpenSource={handleOpenCitation}
               onBack={() => setView('preview')}
             />
           ) : (

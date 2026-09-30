@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // setBaseEnv 写入除检索配置外的全部必需变量。
@@ -19,6 +20,9 @@ func setBaseEnv(t *testing.T) {
 		{"SEED_STUDENT_B1_PASSWORD", "b1p"},
 		{"QDRANT_URL", "http://qdrant:6333"},
 		{"JWT_SECRET", "test-secret-key-at-least-32-bytes-long!!"},
+		{"LLM_BASE_URL", "https://llm.example.com/v1"},
+		{"LLM_API_KEY", "sk-test"},
+		{"LLM_MODEL", "course-chat"},
 	} {
 		t.Setenv(kv[0], kv[1])
 	}
@@ -157,5 +161,86 @@ func TestLoad_JWTExpiryHoursCustom(t *testing.T) {
 	}
 	if cfg.JWT.ExpiryHours != 8 {
 		t.Fatalf("JWT_EXPIRY_HOURS=8 应载入，得到 %d", cfg.JWT.ExpiryHours)
+	}
+}
+
+func TestLoad_MissingLLMBaseURL(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	t.Setenv("LLM_BASE_URL", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("缺少 LLM_BASE_URL 必须报错")
+	}
+}
+
+func TestLoad_MissingLLMAPIKey(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	t.Setenv("LLM_API_KEY", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("缺少 LLM_API_KEY 必须报错")
+	}
+}
+
+func TestLoad_MissingLLMModel(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	t.Setenv("LLM_MODEL", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("缺少 LLM_MODEL 必须报错")
+	}
+}
+
+func TestLoad_LLMTimeoutDefault(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("默认配置应通过: %v", err)
+	}
+	if cfg.LLM.Timeout != 30*time.Second {
+		t.Fatalf("LLM_TIMEOUT_SECONDS 默认应为 30 秒，得到 %v", cfg.LLM.Timeout)
+	}
+}
+
+func TestLoad_LLMTimeoutCustom(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	t.Setenv("LLM_TIMEOUT_SECONDS", "60")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("自定义超时应通过: %v", err)
+	}
+	if cfg.LLM.Timeout != 60*time.Second {
+		t.Fatalf("LLM_TIMEOUT_SECONDS=60 应载入，得到 %v", cfg.LLM.Timeout)
+	}
+}
+
+func TestLoad_LLMTimeoutTooShort(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	t.Setenv("LLM_TIMEOUT_SECONDS", "3")
+	if _, err := Load(); err == nil {
+		t.Fatal("LLM_TIMEOUT_SECONDS=3 必须报错")
+	}
+}
+
+func TestLoad_LLMBaseURLTrailingSlash(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	t.Setenv("LLM_BASE_URL", "https://llm.example.com/v1/")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("末尾斜杠应被去除: %v", err)
+	}
+	if cfg.LLM.BaseURL != "https://llm.example.com/v1" {
+		t.Fatalf("BaseURL 末尾斜杠未去除: %q", cfg.LLM.BaseURL)
 	}
 }

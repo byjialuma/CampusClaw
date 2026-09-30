@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"campusclaw/internal/model"
+	qapkg "campusclaw/internal/qa"
 	searchpkg "campusclaw/internal/search"
 )
 
@@ -61,6 +62,11 @@ type knowledgeSearcher interface {
 	Search(ctx context.Context, query string, classID int64) ([]searchpkg.Result, error)
 }
 
+// qaService 是知识问答编排能力（*qa.Service 满足）。
+type qaService interface {
+	Ask(ctx context.Context, question string, classID int64) (*qapkg.Result, error)
+}
+
 // API 持有全部处理函数共享的依赖。
 type API struct {
 	Users     userAuthenticator
@@ -71,6 +77,7 @@ type API struct {
 	Indexer   indexQueue
 	Vectors   vectorPinger
 	SearchSvc knowledgeSearcher
+	QASvc     qaService
 }
 
 // NewHandler 构建路由树：鉴权在各路由上显式包装。
@@ -84,6 +91,7 @@ func (a *API) NewHandler() http.Handler {
 	mux.HandleFunc("GET /api/me", a.requireAuth(a.me))
 
 	mux.HandleFunc("GET /api/search", a.requireAuth(a.searchKnowledge))
+	mux.HandleFunc("POST /api/qa", a.requireAuth(a.askQuestion))
 
 	mux.HandleFunc("GET /api/materials", a.requireAuth(a.listMaterials))
 	mux.HandleFunc("POST /api/materials", a.requireAuth(a.requireTeacher(a.uploadMaterial)))

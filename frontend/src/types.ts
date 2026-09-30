@@ -35,3 +35,19 @@ export interface SearchResult {
   score: number
   locator: Locator
 }
+
+// 知识问答引用来源。
+export interface Citation {
+  documentId: number
+  fileName: string
+  fileType: 'txt' | 'md' | 'pdf'
+  snippet: string
+  locator: Locator
+  score: number
+}
+
+// 知识问答响应。
+export interface QAResult {
+  answer: string
+  citations: Citation[]
+}

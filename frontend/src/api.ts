@@ -1,4 +1,4 @@
-import type { Material, Me, SearchResult } from './types'
+import type { Material, Me, SearchResult, QAResult } from './types'
 
 const TOKEN_KEY = 'cc_access_token'
 
@@ -115,6 +115,21 @@ export async function searchMaterials(query: string): Promise<SearchResult[]> {
     throw new ApiError(status, msg)
   }
   return (data as { results: SearchResult[] }).results
+}
+
+// 知识问答：提交问题，返回回答与引用来源。
+export async function askQuestion(question: string): Promise<QAResult> {
+  const { status, data } = await request<QAResult | { error: string }>('/api/qa', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question }),
+  })
+  if (status === 401) handle401()
+  if (status !== 200) {
+    const msg = (data as { error?: string }).error ?? '知识库问答失败'
+    throw new ApiError(status, msg)
+  }
+  return data as QAResult
 }
 
 export async function fetchContent(m: Material): Promise<Blob> {

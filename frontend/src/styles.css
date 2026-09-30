@@ -673,3 +673,40 @@ body {
   cursor: pointer;
   padding: 0 4px;
 }
+
+/* ---------- 知识问答 ---------- */
+
+.qa-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.qa-question {
+  margin-bottom: 16px;
+}
+.qa-question-text {
+  font-size: 14px;
+  color: var(--ink);
+  background: #f8f4f4;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 6px 0 0;
+}
+.qa-answer {
+  margin-bottom: 16px;
+}
+.qa-answer-text {
+  font-size: 15px;
+  line-height: 1.8;
+  color: var(--ink);
+  background: var(--pku-red-light);
+  border: 1px solid var(--pku-red-border);
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.qa-citations {
+  margin-top: 8px;
+}

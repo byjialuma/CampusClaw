@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // Config 是应用运行所需的全部配置。
@@ -20,6 +21,7 @@ type Config struct {
 
 	Embedding EmbeddingConfig
 	Qdrant    QdrantConfig
+	LLM       LLMConfig
 
 	SeedTeacherA  SeedAccount
 	SeedStudentA1 SeedAccount
@@ -53,6 +55,14 @@ type QdrantConfig struct {
 	TopK int
 }
 
+// LLMConfig 是 Chat Completions 端点参数。
+type LLMConfig struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+	Timeout time.Duration
+}
+
 // MySQLConfig 是数据库连接参数。
 type MySQLConfig struct {
 	Host     string
@@ -84,6 +94,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	llm, err := loadLLMConfig(req)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		HTTPAddr: getenv("HTTP_ADDR", ":8080"),
 		MySQL: MySQLConfig{
@@ -101,6 +116,7 @@ func Load() (*Config, error) {
 		},
 		Embedding: emb,
 		Qdrant:    qdr,
+		LLM:       llm,
 		SeedTeacherA: SeedAccount{
 			Username: req("SEED_TEACHER_A_USERNAME"),
 			Password: req("SEED_TEACHER_A_PASSWORD"),
@@ -125,6 +141,24 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// loadLLMConfig 加载 Chat Completions 端点配置。
+func loadLLMConfig(req func(string) string) (LLMConfig, error) {
+	llm := LLMConfig{
+		BaseURL: req("LLM_BASE_URL"),
+		APIKey:  req("LLM_API_KEY"),
+		Model:   req("LLM_MODEL"),
+		Timeout: time.Duration(getenvInt("LLM_TIMEOUT_SECONDS", 30)) * time.Second,
+	}
+	if llm.Timeout < 5*time.Second {
+		return LLMConfig{}, fmt.Errorf("LLM_TIMEOUT_SECONDS 必须至少 5，当前为 %d", int(llm.Timeout.Seconds()))
+	}
+	// 去除末尾斜杠，避免拼接出双斜杠。
+	if len(llm.BaseURL) > 0 && llm.BaseURL[len(llm.BaseURL)-1] == '/' {
+		llm.BaseURL = llm.BaseURL[:len(llm.BaseURL)-1]
+	}
+	return llm, nil
 }
 
 // loadSearchConfig 校验向量检索相关环境变量。
