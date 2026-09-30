@@ -1,5 +1,5 @@
 #!/bin/sh
-# 9.2 故障演练：Qdrant 停服期间 /health 与 /api/search 的故障映射。
+# 9.2 故障演练：Qdrant 停服期间 /health 与 /api/search 的故障映射（JWT 版本）。
 # 前置：docker compose stop qdrant
 # 恢复：docker compose start qdrant 后本脚本以 RECOVERED=1 重跑应全部 200。
 set -u
@@ -33,13 +33,22 @@ else
 fi
 
 echo "== 登录 =="
-L_CODE=$(curl -s -c /tmp/fd_c -o /dev/null -w '%{http_code}' -X POST "$BASE/api/sessions" \
+curl -s -o /tmp/fd_login -w '%{http_code}' \
+  -X POST "$BASE/api/sessions" \
   -H 'Content-Type: application/json' \
-  -d '{"username":"teacherA","password":"change_me_teacher_a"}')
+  -d '{"username":"teacherA","password":"change_me_teacher_a"}' > /tmp/fd_login_code
+L_CODE=$(cat /tmp/fd_login_code)
 check "教师登录 200" 200 "$L_CODE"
+FD_TOKEN=$(sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p' /tmp/fd_login)
+if [ -z "$FD_TOKEN" ]; then
+  echo "FAIL: 登录响应缺少 accessToken"
+  FAIL=$((FAIL + 1))
+fi
 
 echo "== /api/search =="
-S_CODE=$(curl -s -b /tmp/fd_c -o /tmp/fd_s -w '%{http_code}' "$BASE/api/search?q=%E9%9B%86%E5%90%88")
+S_CODE=$(curl -s -o /tmp/fd_s -w '%{http_code}' \
+  -H "Authorization: Bearer $FD_TOKEN" \
+  "$BASE/api/search?q=%E9%9B%86%E5%90%88")
 S_JSON=$(cat /tmp/fd_s)
 echo "body=$S_JSON"
 if [ "${RECOVERED:-0}" = "1" ]; then

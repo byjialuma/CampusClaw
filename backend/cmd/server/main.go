@@ -102,8 +102,14 @@ func main() {
 		}
 	}
 
+	jwtSvc, err := auth.NewJWTService(cfg.JWT.Secret, cfg.JWT.ExpiryHours)
+	if err != nil {
+		log.Fatalf("初始化 JWT 服务失败: %v", err)
+	}
+
 	api := &server.API{
-		Users:     &auth.Repository{DB: database, TTL: cfg.SessionTTL},
+		Users:     &auth.Repository{DB: database},
+		JWT:       jwtSvc,
 		Materials: materialsRepo,
 		Tickets:   tickets,
 		DB:        database,
@@ -114,7 +120,6 @@ func main() {
 			Vectors:  vectors,
 			TopK:     cfg.Qdrant.TopK,
 		},
-		SessionTTL: cfg.SessionTTL,
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

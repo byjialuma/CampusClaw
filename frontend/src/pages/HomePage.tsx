@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { createTicket, fetchMaterials, fetchMe, searchMaterials } from '../api'
+import { createTicket, fetchMaterials, fetchMe, getToken, searchMaterials } from '../api'
 import type { Locator, Material, Me, SearchResult } from '../types'
 import TopBar from '../components/TopBar'
 import UploadPanel from '../components/UploadPanel'
@@ -26,6 +26,10 @@ export default function HomePage() {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
+      if (!getToken()) {
+        window.location.replace('/login?next=' + encodeURIComponent('/'))
+        return
+      }
       const u = await fetchMe()
       if (!u) {
         window.location.replace('/login?next=' + encodeURIComponent('/'))

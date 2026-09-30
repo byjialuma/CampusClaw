@@ -9,7 +9,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
@@ -27,8 +26,6 @@ import (
 type fakeUsers struct {
 	users    map[string]*model.User
 	password map[string]string
-	sessions map[string]*model.User
-	counter  int
 }
 
 func newFakeUsers() *fakeUsers {
@@ -43,7 +40,6 @@ func newFakeUsers() *fakeUsers {
 			"studentA1": "a1-pw",
 			"studentB1": "b1-pw",
 		},
-		sessions: map[string]*model.User{},
 	}
 }
 
@@ -56,29 +52,34 @@ func (f *fakeUsers) Authenticate(_ context.Context, username, password string) (
 	return &cp, nil
 }
 
-func (f *fakeUsers) CreateSession(_ context.Context, userID int64) (string, error) {
-	for _, u := range f.users {
-		if u.ID == userID {
-			f.counter++
-			tok := "token-" + u.Username
-			f.sessions[tok] = u
-			return tok, nil
-		}
-	}
-	return "", errors.New("no user")
+// fakeJWT 是内存中的 JWT 测试替身。
+type fakeJWT struct {
+	tokens map[string]*model.User
+	mu     sync.Mutex
 }
 
-func (f *fakeUsers) UserForToken(_ context.Context, token string) (*model.User, error) {
-	if u, ok := f.sessions[token]; ok {
-		cp := *u
-		return &cp, nil
-	}
-	return nil, sql.ErrNoRows
+func newFakeJWT() *fakeJWT {
+	return &fakeJWT{tokens: map[string]*model.User{}}
 }
 
-func (f *fakeUsers) DeleteSession(_ context.Context, token string) error {
-	delete(f.sessions, token)
-	return nil
+func (f *fakeJWT) Sign(user *model.User) (string, time.Time, error) {
+	tok := "jwt-" + user.Username
+	cp := *user
+	f.mu.Lock()
+	f.tokens[tok] = &cp
+	f.mu.Unlock()
+	return tok, time.Now().Add(time.Hour), nil
+}
+
+func (f *fakeJWT) Verify(token string) (*model.User, error) {
+	f.mu.Lock()
+	u, ok := f.tokens[token]
+	f.mu.Unlock()
+	if !ok {
+		return nil, errors.New("token 无效")
+	}
+	cp := *u
+	return &cp, nil
 }
 
 type fakeMaterials struct {
@@ -197,11 +198,11 @@ func (q *fakeIndexQueue) ids() []int64 {
 
 func newTestAPI() *API {
 	return &API{
-		Users:      newFakeUsers(),
-		Materials:  newFakeMaterials(),
-		Tickets:    &fakeTickets{tickets: map[string]*model.Ticket{}},
-		DB:         &fakePinger{},
-		SessionTTL: time.Hour,
+		Users:     newFakeUsers(),
+		JWT:       newFakeJWT(),
+		Materials: newFakeMaterials(),
+		Tickets:   &fakeTickets{tickets: map[string]*model.Ticket{}},
+		DB:        &fakePinger{},
 	}
 }
 
@@ -225,18 +226,37 @@ func loginResponse(t *testing.T, base, username, password string) *http.Response
 
 func loginJarClient(t *testing.T, base, username, password string) *http.Client {
 	t.Helper()
-	jar, _ := cookiejar.New(nil)
-	client := &http.Client{Jar: jar}
+	// 登录获取 token
 	body, _ := json.Marshal(map[string]string{"username": username, "password": password})
-	resp, err := client.Post(base+"/api/sessions", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(base+"/api/sessions", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("登录请求失败: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("登录失败: %d", resp.StatusCode)
 	}
+	var loginResp struct {
+		AccessToken string `json:"accessToken"`
+	}
+	json.NewDecoder(resp.Body).Decode(&loginResp)
 	resp.Body.Close()
-	return client
+	if loginResp.AccessToken == "" {
+		t.Fatal("登录响应缺少 accessToken")
+	}
+	// 使用 Bearer token 的 client
+	return &http.Client{
+		Transport: &bearerTransport{token: loginResp.AccessToken},
+	}
+}
+
+// bearerTransport 自动为每个请求注入 Authorization: Bearer 头。
+type bearerTransport struct {
+	token string
+}
+
+func (b *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+b.token)
+	return http.DefaultTransport.RoundTrip(req)
 }
 
 func uploadRequest(t *testing.T, fieldName, filename string, content []byte) (*bytes.Buffer, string) {
@@ -297,36 +317,33 @@ func TestHealth(t *testing.T) {
 
 // ---------- 登录/退出/会话 ----------
 
-func TestLoginSuccessSetsHttpOnlyCookie(t *testing.T) {
+func TestLoginSuccessReturnsJWT(t *testing.T) {
 	srv, _ := newTestServer(t)
 	resp := loginResponse(t, srv.URL, "teacherA", "ta-pw")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("期望 200，得到 %d", resp.StatusCode)
 	}
-	cookies := resp.Cookies()
-	var cc *http.Cookie
-	for _, c := range cookies {
+	// 不再返回会话 Cookie。
+	for _, c := range resp.Cookies() {
 		if c.Name == SessionCookie {
-			cc = c
+			t.Fatal("JWT 认证不应返回会话 Cookie")
 		}
 	}
-	if cc == nil {
-		t.Fatal("响应缺少 cc_session Cookie")
+	var lr struct {
+		User        meResponse `json:"user"`
+		AccessToken string     `json:"accessToken"`
+		ExpiresAt   string     `json:"expiresAt"`
 	}
-	if !cc.HttpOnly {
-		t.Fatal("会话 Cookie 必须 HttpOnly")
+	json.NewDecoder(resp.Body).Decode(&lr)
+	if lr.AccessToken == "" {
+		t.Fatal("登录响应必须包含 accessToken")
 	}
-	if cc.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("SameSite 应为 Lax，得到 %v", cc.SameSite)
+	if lr.ExpiresAt == "" {
+		t.Fatal("登录响应必须包含 expiresAt")
 	}
-	if cc.Path != "/" {
-		t.Fatalf("Path 应为 /，得到 %q", cc.Path)
-	}
-	var me meResponse
-	json.NewDecoder(resp.Body).Decode(&me)
-	if me.Role != "teacher" || me.ClassName != "A班" || me.DisplayName != "教师A" {
-		t.Fatalf("登录返回的身份信息错误: %+v", me)
+	if lr.User.Role != "teacher" || lr.User.ClassName != "A班" || lr.User.DisplayName != "教师A" {
+		t.Fatalf("登录返回的身份信息错误: %+v", lr.User)
 	}
 }
 
@@ -352,7 +369,7 @@ func TestLoginFailuresAreIndistinguishable(t *testing.T) {
 	}
 }
 
-func TestProtectedEndpointsRequireSession(t *testing.T) {
+func TestProtectedEndpointsRequireToken(t *testing.T) {
 	srv, _ := newTestServer(t)
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodGet, "/api/me"},
@@ -367,13 +384,27 @@ func TestProtectedEndpointsRequireSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("%s %s 无会话时期望 401，得到 %d", tc.method, tc.path, resp.StatusCode)
+			t.Fatalf("%s %s 无 token 时期望 401，得到 %d", tc.method, tc.path, resp.StatusCode)
 		}
 		resp.Body.Close()
 	}
 }
 
-func TestLogoutDestroysSession(t *testing.T) {
+func TestProtectedEndpointsRejectInvalidToken(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/me", nil)
+	req.Header.Set("Authorization", "Bearer invalid-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("无效 token 期望 401，得到 %d", resp.StatusCode)
+	}
+}
+
+func TestLogoutReturns204(t *testing.T) {
 	srv, _ := newTestServer(t)
 	client := loginJarClient(t, srv.URL, "studentA1", "a1-pw")
 
@@ -387,10 +418,11 @@ func TestLogoutDestroysSession(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("退时期望 204，得到 %d", resp.StatusCode)
+		t.Fatalf("退出时期望 204，得到 %d", resp.StatusCode)
 	}
-	if resp2, _ := client.Get(srv.URL + "/api/me"); resp2.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("退出后旧会话应失效（401），得到 %d", resp2.StatusCode)
+	// JWT 无状态：退出后 token 仍有效（客户端负责丢弃）。
+	if resp2, _ := client.Get(srv.URL + "/api/me"); resp2.StatusCode != http.StatusOK {
+		t.Fatalf("JWT 无状态，退出后 token 仍应有效，得到 %d", resp2.StatusCode)
 	}
 }
 

@@ -18,6 +18,7 @@ func setBaseEnv(t *testing.T) {
 		{"SEED_STUDENT_B1_USERNAME", "b1"},
 		{"SEED_STUDENT_B1_PASSWORD", "b1p"},
 		{"QDRANT_URL", "http://qdrant:6333"},
+		{"JWT_SECRET", "test-secret-key-at-least-32-bytes-long!!"},
 	} {
 		t.Setenv(kv[0], kv[1])
 	}
@@ -109,5 +110,52 @@ func TestLoad_MissingCoreVarsReported(t *testing.T) {
 	t.Setenv("MYSQL_USER", "")
 	if _, err := Load(); err == nil {
 		t.Fatal("缺少必需环境变量时必须返回错误")
+	}
+}
+
+func TestLoad_MissingJWTSecret(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	t.Setenv("JWT_SECRET", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("缺少 JWT_SECRET 必须报错")
+	}
+}
+
+func TestLoad_JWTSecretTooShort(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	t.Setenv("JWT_SECRET", "short")
+	if _, err := Load(); err == nil {
+		t.Fatal("JWT_SECRET 过短必须报错")
+	}
+}
+
+func TestLoad_JWTExpiryHoursDefault(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("默认配置应通过: %v", err)
+	}
+	if cfg.JWT.ExpiryHours != 2 {
+		t.Fatalf("JWT_EXPIRY_HOURS 默认应为 2，得到 %d", cfg.JWT.ExpiryHours)
+	}
+}
+
+func TestLoad_JWTExpiryHoursCustom(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+	t.Setenv("JWT_EXPIRY_HOURS", "8")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("自定义有效期应通过: %v", err)
+	}
+	if cfg.JWT.ExpiryHours != 8 {
+		t.Fatalf("JWT_EXPIRY_HOURS=8 应载入，得到 %d", cfg.JWT.ExpiryHours)
 	}
 }

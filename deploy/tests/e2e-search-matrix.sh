@@ -1,5 +1,5 @@
 #!/bin/sh
-# CampusClaw 知识库检索：班级隔离与可用性端到端矩阵。
+# CampusClaw 知识库检索：班级隔离与可用性端到端矩阵（JWT 版本）。
 # 前置：backend 以 EMBEDDING_PROVIDER=stub 连接真实 Qdrant，种子材料已回填。
 # 用法（在 compose 网络内运行）：
 #   docker run --rm --network campusclaw_ccnet \
@@ -13,10 +13,11 @@ B1_USER="${SEED_STUDENT_B1_USERNAME:-studentB1}"
 B1_PW="${SEED_STUDENT_B1_PASSWORD:-change_me_student_b1}"
 
 BODY=/tmp/ccs_body.txt
-T_JAR=/tmp/ccs_teacher.jar
-B1_JAR=/tmp/ccs_b1.jar
 PASS=0
 FAIL=0
+
+T_TOKEN=""
+B1_TOKEN=""
 
 check() { # desc expected actual
   if [ "$2" = "$3" ]; then
@@ -29,22 +30,51 @@ check() { # desc expected actual
   fi
 }
 
-get() { # path jar
-  curl -s -c "$2" -o "$BODY" -w '%{http_code}' -b "$2" "$BASE$1"
+get() { # path [token]
+  if [ -n "${2:-}" ]; then
+    curl -s -o "$BODY" -w '%{http_code}' -H "Authorization: Bearer $2" "$BASE$1"
+  else
+    curl -s -o "$BODY" -w '%{http_code}' "$BASE$1"
+  fi
 }
-post_json() { # path jar json
-  curl -s -c "$2" -o "$BODY" -w '%{http_code}' -b "$2" \
-    -H 'Content-Type: application/json' -X POST -d "$3" "$BASE$1"
+post_json() { # path token json
+  curl -s -o "$BODY" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${2:-}" \
+    -X POST -d "$3" "$BASE$1"
 }
-# 带会话的 GET，查询串用原始形式传入（用于注入伪造 class_id 参数）。
-getq() { # rawQuery jar
-  curl -s -c "$2" -o "$BODY" -w '%{http_code}' -b "$2" "$BASE/api/search?$1"
+# 带 token 的 GET，查询串用原始形式传入（用于注入伪造 class_id 参数）。
+getq() { # rawQuery token
+  curl -s -o "$BODY" -w '%{http_code}' \
+    -H "Authorization: Bearer $2" \
+    "$BASE/api/search?$1"
 }
 countof() { # pattern  （在 $BODY 中出现次数）
   grep -o "$1" "$BODY" | wc -l | tr -d ' '
 }
 doc_ids() { # 输出排序去重后的 documentId 列表
   grep -o '"documentId":[0-9]*' "$BODY" | cut -d: -f2 | sort -n -u | tr '\n' ' '
+}
+
+login_and_save_token() { # var_name username password
+  code=$(curl -s -o "$BODY" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -X POST -d "{\"username\":\"$2\",\"password\":\"$3\"}" "$BASE/api/sessions")
+  if [ "$code" != "200" ]; then
+    echo "FAIL: 登录 $2 失败: $code"
+    cat "$BODY"
+    FAIL=$((FAIL + 1))
+    return 1
+  fi
+  tok=$(sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p' "$BODY")
+  if [ -z "$tok" ]; then
+    echo "FAIL: 登录响应缺少 accessToken"
+    FAIL=$((FAIL + 1))
+    return 1
+  fi
+  eval "$1=\"$tok\""
+  echo "PASS: $2 登录成功并获取 token"
+  PASS=$((PASS + 1))
 }
 
 echo "== 健康检查（MySQL + Qdrant 双探测）=="
@@ -54,11 +84,11 @@ grep -q '"vector":"up"' "$BODY" \
   || { echo "FAIL: health vector 状态: $(cat "$BODY")"; FAIL=$((FAIL+1)); }
 
 echo "== 登录 =="
-check "教师登录 200" 200 "$(post_json /api/sessions "$T_JAR" "{\"username\":\"$T_USER\",\"password\":\"$T_PW\"}")"
-check "学生 B1 登录 200" 200 "$(post_json /api/sessions "$B1_JAR" "{\"username\":\"$B1_USER\",\"password\":\"$B1_PW\"}")"
+login_and_save_token T_TOKEN "$T_USER" "$T_PW"
+login_and_save_token B1_TOKEN "$B1_USER" "$B1_PW"
 
 echo "== 等待种子材料回填 ready =="
-wait_ready() { # jar expectCount label
+wait_ready() { # token expectCount label
   i=0
   while [ "$i" -lt 60 ]; do
     get /api/materials "$1" >/dev/null
@@ -73,25 +103,25 @@ wait_ready() { # jar expectCount label
   FAIL=$((FAIL + 1))
   return 1
 }
-wait_ready "$T_JAR" 2 "A 班两份种子材料" && { echo "PASS: A 班种子材料全部 ready"; PASS=$((PASS+1)); }
-wait_ready "$B1_JAR" 1 "B 班 PDF" && { echo "PASS: B 班 PDF ready"; PASS=$((PASS+1)); }
+wait_ready "$T_TOKEN" 2 "A 班两份种子材料" && { echo "PASS: A 班种子材料全部 ready"; PASS=$((PASS+1)); }
+wait_ready "$B1_TOKEN" 1 "B 班 PDF" && { echo "PASS: B 班 PDF ready"; PASS=$((PASS+1)); }
 
 # 记录各班材料 id 集合。
-get /api/materials "$T_JAR" >/dev/null
+get /api/materials "$T_TOKEN" >/dev/null
 A_IDS=$(grep -o '"id":[0-9]*' "$BODY" | cut -d: -f2 | sort -n -u | tr '\n' ' ')
-get /api/materials "$B1_JAR" >/dev/null
+get /api/materials "$B1_TOKEN" >/dev/null
 B_IDS=$(grep -o '"id":[0-9]*' "$BODY" | cut -d: -f2 | sort -n -u | tr '\n' ' ')
 echo "A 班材料 ids: $A_IDS / B 班材料 ids: $B_IDS"
 
 echo "== 未认证 / 参数校验 =="
 check "未登录检索 401" 401 "$(curl -s -o "$BODY" -w '%{http_code}' "$BASE/api/search?q=x")"
-check "空查询 400" 400 "$(get '/api/search?q=' "$T_JAR")"
-check "纯空白查询 400" 400 "$(get '/api/search?q=%20%20' "$T_JAR")"
+check "空查询 400" 400 "$(get '/api/search?q=' "$T_TOKEN")"
+check "纯空白查询 400" 400 "$(get '/api/search?q=%20%20' "$T_TOKEN")"
 LONGQ=$(printf 'a%.0s' $(seq 1 501))
-check "超过 500 字 400" 400 "$(get "/api/search?q=$LONGQ" "$T_JAR")"
+check "超过 500 字 400" 400 "$(get "/api/search?q=$LONGQ" "$T_TOKEN")"
 
 echo "== 班级隔离：CJK 查询「集合」 =="
-check "A 班检索「集合」200" 200 "$(get '/api/search?q=%E9%9B%86%E5%90%88' "$T_JAR")"
+check "A 班检索「集合」200" 200 "$(get '/api/search?q=%E9%9B%86%E5%90%88' "$T_TOKEN")"
 A_HITS=$(countof '"documentId":')
 if [ "$A_HITS" -gt 0 ]; then
   echo "PASS: A 班「集合」有 $A_HITS 条命中"; PASS=$((PASS+1))
@@ -113,7 +143,7 @@ grep -qE '"kind":"(lines|heading)"' "$BODY" \
   && { echo "PASS: A 班命中含行号/章节溯源"; PASS=$((PASS+1)); } \
   || { echo "FAIL: A 班缺少 txt/md locator"; FAIL=$((FAIL+1)); }
 
-check "B 班检索「集合」200（零命中）" 200 "$(get '/api/search?q=%E9%9B%86%E5%90%88' "$B1_JAR")"
+check "B 班检索「集合」200（零命中）" 200 "$(get '/api/search?q=%E9%9B%86%E5%90%88' "$B1_TOKEN")"
 [ "$(countof '"documentId":')" = 0 ] \
   && { echo "PASS: B 班对中文「集合」零召回"; PASS=$((PASS+1)); } \
   || { echo "FAIL: B 班竟然召回中文材料（跨班泄漏）: $(cat "$BODY")"; FAIL=$((FAIL+1)); }
@@ -122,7 +152,7 @@ grep -q '"results":\[\]' "$BODY" \
   || { echo "FAIL: 空结果形态错误: $(cat "$BODY")"; FAIL=$((FAIL+1)); }
 
 echo "== 班级隔离：Latin 查询「Sets」 =="
-check "B 班检索 Sets 200" 200 "$(get '/api/search?q=Sets' "$B1_JAR")"
+check "B 班检索 Sets 200" 200 "$(get '/api/search?q=Sets' "$B1_TOKEN")"
 B_HITS=$(countof '"documentId":')
 [ "$B_HITS" -gt 0 ] \
   && { echo "PASS: B 班 Sets 有 $B_HITS 条命中"; PASS=$((PASS+1)); } \
@@ -136,17 +166,17 @@ grep -q '"kind":"page"' "$BODY" && grep -q '"page":1' "$BODY" \
   && { echo "PASS: B 班 PDF 命中带第 1 页页码溯源"; PASS=$((PASS+1)); } \
   || { echo "FAIL: B 班 PDF 缺少页码 locator: $(cat "$BODY")"; FAIL=$((FAIL+1)); }
 
-check "A 班检索 Sets 200（零命中）" 200 "$(get '/api/search?q=Sets' "$T_JAR")"
+check "A 班检索 Sets 200（零命中）" 200 "$(get '/api/search?q=Sets' "$T_TOKEN")"
 [ "$(countof '"documentId":')" = 0 ] \
   && { echo "PASS: A 班对 Sets 零召回（两班结果集合互不相交）"; PASS=$((PASS+1)); } \
   || { echo "FAIL: A 班召回了 B 班英文 PDF（跨班泄漏）: $(cat "$BODY")"; FAIL=$((FAIL+1)); }
 
 echo "== 伪造班级参数无效 =="
-getq 'q=Sets&class_id=1&classId=1' "$B1_JAR" >/dev/null
+getq 'q=Sets&class_id=1&classId=1' "$B1_TOKEN" >/dev/null
 [ "$(doc_ids)" = "$B_IDS" ] \
   && { echo "PASS: B1 伪造 class_id=1 仍锁定 B 班"; PASS=$((PASS+1)); } \
   || { echo "FAIL: B1 伪造参数后结果异常: $(doc_ids)"; FAIL=$((FAIL+1)); }
-getq 'q=%E9%9B%86%E5%90%88&class_id=2' "$T_JAR" >/dev/null
+getq 'q=%E9%9B%86%E5%90%88&class_id=2' "$T_TOKEN" >/dev/null
 GOT=$(doc_ids)
 subset=1
 for id in $GOT; do

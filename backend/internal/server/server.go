@@ -15,12 +15,15 @@ import (
 // SessionCookie 是服务端会话 Cookie 名称。
 const SessionCookie = "cc_session"
 
-// 用户身份相关依赖（auth.Repository 满足；测试用替身）。
-type userService interface {
+// userAuthenticator 是最小的身份校验能力。
+type userAuthenticator interface {
 	Authenticate(ctx context.Context, username, password string) (*model.User, error)
-	CreateSession(ctx context.Context, userID int64) (string, error)
-	UserForToken(ctx context.Context, token string) (*model.User, error)
-	DeleteSession(ctx context.Context, token string) error
+}
+
+// jwtVerifier 是 JWT 验签与签发的最小能力。
+type jwtVerifier interface {
+	Sign(user *model.User) (token string, expiresAt time.Time, err error)
+	Verify(token string) (*model.User, error)
 }
 
 // 材料相关依赖（*store.MaterialRepository 满足）。
@@ -60,14 +63,14 @@ type knowledgeSearcher interface {
 
 // API 持有全部处理函数共享的依赖。
 type API struct {
-	Users      userService
-	Materials  materialService
-	Tickets    ticketService
-	DB         pinger
-	Indexer    indexQueue
-	Vectors    vectorPinger
-	SearchSvc  knowledgeSearcher
-	SessionTTL time.Duration
+	Users     userAuthenticator
+	JWT       jwtVerifier
+	Materials materialService
+	Tickets   ticketService
+	DB        pinger
+	Indexer   indexQueue
+	Vectors   vectorPinger
+	SearchSvc knowledgeSearcher
 }
 
 // NewHandler 构建路由树：鉴权在各路由上显式包装。

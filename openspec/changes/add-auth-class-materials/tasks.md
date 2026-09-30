@@ -1,4 +1,4 @@
-﻿## 1. 工程骨架与部署基础设施
+﻿﻿﻿﻿﻿﻿## 1. 工程骨架与部署基础设施
 
 - [x] 1.1 创建仓库目录结构（`frontend/`、`backend/`、`deploy/nginx/`、`deploy/mysql/`、`deploy/seed/materials/`、数据卷挂载点），并确认各目录与占位文件存在
 - [x] 1.2 编写 `.env.example`，包含 `MYSQL_DATABASE/USER/PASSWORD`、`SEED_TEACHER_A_USERNAME/PASSWORD`、`SEED_STUDENT_A1_USERNAME/PASSWORD`、`SEED_STUDENT_B1_USERNAME/PASSWORD`、`SESSION_TTL_SECONDS`；verify：文件中无任何真实密码，所有种子密码项均存在

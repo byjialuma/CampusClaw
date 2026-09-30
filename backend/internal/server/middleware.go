@@ -1,31 +1,32 @@
 package server
 
 import (
-	"database/sql"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"campusclaw/internal/auth"
 	"campusclaw/internal/model"
 )
 
-// requireAuth 强制会话有效，并把当前用户注入上下文。
+// requireAuth 强制 JWT access token 有效，并把当前用户注入上下文。
 func (a *API) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(SessionCookie)
-		if err != nil || c.Value == "" {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
 			writeError(w, http.StatusUnauthorized, "未登录或会话已失效")
 			return
 		}
-		u, err := a.Users.UserForToken(r.Context(), c.Value)
-		if err == sql.ErrNoRows {
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || parts[0] != "Bearer" || parts[1] == "" {
 			writeError(w, http.StatusUnauthorized, "未登录或会话已失效")
 			return
 		}
+		u, err := a.JWT.Verify(parts[1])
 		if err != nil {
-			log.Printf("查询会话失败: %v", err)
-			writeError(w, http.StatusInternalServerError, "服务器内部错误")
+			log.Printf("JWT 验签失败: %v", err)
+			writeError(w, http.StatusUnauthorized, "未登录或会话已失效")
 			return
 		}
 		ctx := auth.WithUser(r.Context(), u)

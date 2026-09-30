@@ -1,8 +1,27 @@
 import type { Material, Me, SearchResult } from './types'
 
-// 所有请求都携带同源会话 Cookie（HttpOnly，JS 不可读）。
+const TOKEN_KEY = 'cc_access_token'
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY)
+}
+
+export function setToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token)
+}
+
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
+// 所有受保护请求自动携带 Authorization: Bearer 头。
 async function request<T>(path: string, init: RequestInit = {}): Promise<{ status: number; data: T }> {
-  const resp = await fetch(path, { credentials: 'include', ...init })
+  const token = getToken()
+  const headers = new Headers(init.headers)
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+  const resp = await fetch(path, { ...init, headers })
   const text = await resp.text()
   let data: unknown = null
   if (text) {
@@ -15,6 +34,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<{ statu
   return { status: resp.status, data: data as T }
 }
 
+function handle401(): never {
+  clearToken()
+  window.location.replace('/login?next=' + encodeURIComponent(window.location.pathname))
+  throw new ApiError(401, '未登录')
+}
+
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -23,8 +48,14 @@ export class ApiError extends Error {
   }
 }
 
+export interface LoginResult {
+  user: Me
+  accessToken: string
+  expiresAt: string
+}
+
 export async function login(username: string, password: string): Promise<Me> {
-  const { status, data } = await request<Me | { error: string }>('/api/sessions', {
+  const { status, data } = await request<LoginResult | { error: string }>('/api/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
@@ -32,26 +63,29 @@ export async function login(username: string, password: string): Promise<Me> {
   if (status !== 200) {
     throw new ApiError(status, (data as { error: string }).error ?? '登录失败')
   }
-  return data as Me
+  const result = data as LoginResult
+  setToken(result.accessToken)
+  return result.user
 }
 
 export async function logout(): Promise<void> {
-  await request('/api/sessions', { method: 'DELETE' })
+  clearToken()
 }
 
 export async function fetchMe(): Promise<Me | null> {
+  if (!getToken()) return null
   const { status, data } = await request<Me>('/api/me')
-  if (status === 401) return null
+  if (status === 401) {
+    clearToken()
+    return null
+  }
   if (status !== 200) throw new ApiError(status, '获取当前用户失败')
   return data
 }
 
 export async function fetchMaterials(): Promise<Material[]> {
   const { status, data } = await request<{ materials: Material[] }>('/api/materials')
-  if (status === 401) {
-    window.location.replace('/login?next=' + encodeURIComponent(window.location.pathname))
-    throw new ApiError(401, '未登录')
-  }
+  if (status === 401) handle401()
   if (status !== 200) throw new ApiError(status, '加载材料列表失败')
   return data.materials
 }
@@ -63,21 +97,19 @@ export async function uploadMaterial(file: File): Promise<Material> {
     method: 'POST',
     body: form,
   })
+  if (status === 401) handle401()
   if (status !== 201) {
     throw new ApiError(status, (data as { error: string }).error ?? '上传失败')
   }
   return data as Material
 }
 
-// 班级范围由服务端会话决定，前端不传任何班级参数。
+// 班级范围由服务端从 JWT 解析，前端不传任何班级参数。
 export async function searchMaterials(query: string): Promise<SearchResult[]> {
   const { status, data } = await request<{ results: SearchResult[] } | { error: string }>(
     `/api/search?q=${encodeURIComponent(query)}`,
   )
-  if (status === 401) {
-    window.location.replace('/login?next=' + encodeURIComponent(window.location.pathname))
-    throw new ApiError(401, '未登录')
-  }
+  if (status === 401) handle401()
   if (status !== 200) {
     const msg = (data as { error?: string }).error ?? '知识库检索失败'
     throw new ApiError(status, msg)
@@ -86,8 +118,14 @@ export async function searchMaterials(query: string): Promise<SearchResult[]> {
 }
 
 export async function fetchContent(m: Material): Promise<Blob> {
-  const resp = await fetch(`/api/materials/${m.id}/content`, { credentials: 'include' })
+  const token = getToken()
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const resp = await fetch(`/api/materials/${m.id}/content`, { headers })
   if (resp.status === 401) {
+    clearToken()
     window.location.replace('/login')
     throw new ApiError(401, '未登录')
   }
@@ -100,6 +138,7 @@ export async function createTicket(materialId: number): Promise<string> {
     `/api/materials/${materialId}/download-ticket`,
     { method: 'POST' },
   )
+  if (status === 401) handle401()
   if (status !== 200) throw new ApiError(status, data.error ?? '创建下载凭证失败')
   return data.ticket
 }
@@ -110,8 +149,13 @@ export type DownloadResult =
 
 // 下载页：凭一次性票据取文件，返回 Blob 与原始文件名。
 export async function downloadByTicket(ticket: string): Promise<DownloadResult> {
+  const token = getToken()
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
   const resp = await fetch(`/api/download?ticket=${encodeURIComponent(ticket)}`, {
-    credentials: 'include',
+    headers,
     cache: 'no-store',
   })
   if (!resp.ok) return { ok: false, status: resp.status }

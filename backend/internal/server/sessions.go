@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"campusclaw/internal/auth"
 )
@@ -10,6 +11,13 @@ import (
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+// loginResponseBody 是登录成功后的响应体。
+type loginResponseBody struct {
+	User        meResponse `json:"user"`
+	AccessToken string     `json:"accessToken"`
+	ExpiresAt   time.Time  `json:"expiresAt"`
 }
 
 // POST /api/sessions
@@ -27,28 +35,21 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := a.Users.CreateSession(r.Context(), u.ID)
+	token, expiresAt, err := a.JWT.Sign(u)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "创建会话失败")
+		writeError(w, http.StatusInternalServerError, "生成访问令牌失败")
 		return
 	}
-	a.setSessionCookie(w, token)
-	writeJSON(w, http.StatusOK, toMeResponse(u))
+	writeJSON(w, http.StatusOK, loginResponseBody{
+		User:        toMeResponse(u),
+		AccessToken: token,
+		ExpiresAt:   expiresAt,
+	})
 }
 
 // DELETE /api/sessions
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
-		_ = a.Users.DeleteSession(r.Context(), c.Value)
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     SessionCookie,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   -1,
-	})
+	// JWT 无状态，客户端直接丢弃 token 即可；服务端不维护黑名单。
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -61,15 +62,4 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toMeResponse(u))
-}
-
-func (a *API) setSessionCookie(w http.ResponseWriter, token string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     SessionCookie,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(a.SessionTTL.Seconds()),
-	})
 }

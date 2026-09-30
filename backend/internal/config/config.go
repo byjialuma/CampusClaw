@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"time"
 )
 
 // Config 是应用运行所需的全部配置。
@@ -17,7 +16,7 @@ type Config struct {
 	DataDir string
 	SeedDir string
 
-	SessionTTL time.Duration
+	JWT JWTConfig
 
 	Embedding EmbeddingConfig
 	Qdrant    QdrantConfig
@@ -25,6 +24,12 @@ type Config struct {
 	SeedTeacherA  SeedAccount
 	SeedStudentA1 SeedAccount
 	SeedStudentB1 SeedAccount
+}
+
+// JWTConfig 是 JWT access token 参数。
+type JWTConfig struct {
+	Secret      string
+	ExpiryHours int
 }
 
 // Embedding 提供方取值。
@@ -88,11 +93,14 @@ func Load() (*Config, error) {
 			User:     req("MYSQL_USER"),
 			Password: req("MYSQL_PASSWORD"),
 		},
-		DataDir:    getenv("DATA_DIR", "/app/data"),
-		SeedDir:    getenv("SEED_DIR", "/app/seed/materials"),
-		SessionTTL: time.Duration(getenvInt("SESSION_TTL_SECONDS", 28800)) * time.Second,
-		Embedding:  emb,
-		Qdrant:     qdr,
+		DataDir: getenv("DATA_DIR", "/app/data"),
+		SeedDir: getenv("SEED_DIR", "/app/seed/materials"),
+		JWT: JWTConfig{
+			Secret:      req("JWT_SECRET"),
+			ExpiryHours: getenvInt("JWT_EXPIRY_HOURS", 2),
+		},
+		Embedding: emb,
+		Qdrant:    qdr,
 		SeedTeacherA: SeedAccount{
 			Username: req("SEED_TEACHER_A_USERNAME"),
 			Password: req("SEED_TEACHER_A_PASSWORD"),
@@ -110,6 +118,12 @@ func Load() (*Config, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("缺少必需环境变量: %v", missing)
 	}
+
+	// JWT_SECRET 长度至少 32 字节（HS256 最低安全要求）。
+	if len(cfg.JWT.Secret) < 32 {
+		return nil, fmt.Errorf("JWT_SECRET 长度必须至少 32 字节，当前 %d 字节", len(cfg.JWT.Secret))
+	}
+
 	return cfg, nil
 }
 

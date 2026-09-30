@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { downloadByTicket } from '../api'
+import { downloadByTicket, getToken } from '../api'
 
 export default function DownloadPage() {
   const [params] = useSearchParams()
@@ -12,7 +12,7 @@ export default function DownloadPage() {
     started.current = true
 
     const ticket = params.get('ticket')
-    if (!ticket) {
+    if (!ticket || !getToken()) {
       window.location.replace('/login')
       return
     }
