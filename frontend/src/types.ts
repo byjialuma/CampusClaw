@@ -7,6 +7,14 @@ export interface Me {
   className: string
 }
 
+// 教师查看本班学生名单时的一行数据。
+export interface StudentInfo {
+  id: number
+  username: string
+  displayName: string
+  createdAt: string
+}
+
 export interface Material {
   id: number
   name: string

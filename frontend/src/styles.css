@@ -526,14 +526,7 @@ body {
   margin: 6px 0;
 }
 
-/* ---------- 知识库检索 ---------- */
-.search-card {
-  margin-bottom: 14px;
-}
-.search-form {
-  display: flex;
-  gap: 8px;
-}
+/* ---------- 通用搜索/输入框（解题助手输入框复用） ---------- */
 .search-input {
   flex: 1;
   min-width: 0;
@@ -547,108 +540,6 @@ body {
   outline: none;
   border-color: var(--pku-red);
   box-shadow: 0 0 0 3px rgba(148, 7, 10, 0.12);
-}
-
-.search-results-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-.search-summary {
-  flex: none;
-  margin: 0 0 10px;
-  font-size: 13px;
-}
-.search-empty {
-  padding: 36px 12px;
-  text-align: center;
-}
-.search-empty-title {
-  font-size: 15px;
-  color: var(--ink);
-  margin-bottom: 8px;
-}
-.search-error {
-  margin: 8px 0;
-}
-
-.result-list {
-  /* 结果卡片为定高 flex 容器（.preview-card overflow:hidden），
-     列表本身作为滚动体，否则超出视口的命中会被裁掉且无法滚动查看。 */
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  list-style: none;
-  margin: 0;
-  padding: 0 4px 2px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.result-item {
-  border: 1px solid var(--card-border);
-  border-radius: 10px;
-  padding: 12px 14px;
-  background: #fff;
-}
-.result-item:hover {
-  border-color: var(--pku-red-border);
-}
-.result-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.result-file {
-  flex: 1;
-  min-width: 0;
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--pku-red-dark);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.result-score {
-  font-size: 12px;
-  color: var(--ink-soft);
-  background: var(--pku-red-light);
-  border-radius: 999px;
-  padding: 2px 10px;
-  white-space: nowrap;
-}
-.result-snippet {
-  margin: 0 0 10px;
-  font-size: 14px;
-  line-height: 1.7;
-  color: var(--ink);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.result-foot {
-  display: flex;
-  justify-content: flex-end;
-}
-.locator-badge {
-  border: 1px solid var(--pku-red-border);
-  background: var(--pku-red-light);
-  color: var(--pku-red-dark);
-  border-radius: 999px;
-  padding: 4px 14px;
-  font-size: 12.5px;
-  cursor: pointer;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.locator-badge:hover {
-  background: var(--pku-red);
-  color: #fff;
 }
 
 .locator-hint {
@@ -674,58 +565,9 @@ body {
   padding: 0 4px;
 }
 
-/* ---------- 知识问答 ---------- */
-
-.qa-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-}
-.qa-question {
-  margin-bottom: 16px;
-}
-.qa-question-text {
-  font-size: 14px;
-  color: var(--ink);
-  background: #f8f4f4;
-  border-radius: 8px;
-  padding: 10px 14px;
-  margin: 6px 0 0;
-}
-.qa-answer {
-  margin-bottom: 16px;
-}
-.qa-answer-text {
-  font-size: 15px;
-  line-height: 1.8;
-  color: var(--ink);
-  background: var(--pku-red-light);
-  border: 1px solid var(--pku-red-border);
-  border-radius: 10px;
-  padding: 14px 18px;
-  margin: 6px 0 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.qa-citations {
-  margin-top: 8px;
-}
-
 /* ---------- 解题助手：入口与左栏 ---------- */
 
-.tutor-entry {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.tutor-entry-text .card-title {
-  margin-bottom: 4px;
-}
-.tutor-entry-text .file-hint {
-  margin-top: 0;
-}
-
+/* 历史会话区（学生侧栏下方 + 教师无此区） */
 .assistant-panel-head {
   display: flex;
   align-items: center;
@@ -951,41 +793,11 @@ body {
 
 .tutor-view {
   padding: 16px 18px;
-}
-.tutor-head {
-  flex: none;
-}
-.tutor-head .card-title {
-  margin: 0;
-}
-.tutor-head-actions {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.tutor-tabs {
-  display: flex;
-  border: 1px solid var(--card-border);
-  border-radius: 8px;
+  flex-direction: column;
   overflow: hidden;
-}
-.tutor-tab {
-  border: none;
-  background: #fff;
-  color: var(--ink-soft);
-  padding: 5px 16px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.tutor-tab:hover {
-  background: var(--pku-red-light);
-  color: var(--pku-red);
-}
-.tutor-tab.active {
-  background: var(--pku-red);
-  color: #fff;
-  font-weight: 600;
 }
 .tutor-empty {
   flex: 1;
@@ -1100,3 +912,190 @@ body {
 .tutor-input {
   flex: 1;
 }
+
+/* ---------- 角色化首页布局 ---------- */
+
+/* 教师布局：单列，顶部标签页条 + 全高内容区。 */
+.layout-teacher {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas: 'tabs' 'content';
+}
+.layout-teacher .nav-tabs {
+  grid-area: tabs;
+}
+.layout-teacher .right-pane-teacher {
+  grid-area: content;
+  min-height: 0;
+}
+
+/* 学生布局：保持默认 380px 1fr 两列。 */
+.layout-student {
+  grid-template-columns: 300px 1fr;
+}
+
+/* ---------- 教师标签页条 ---------- */
+
+.nav-tabs {
+  display: flex;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 6px;
+}
+.nav-tab {
+  flex: 1;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.nav-tab:hover {
+  background: var(--pku-red-light);
+  color: var(--pku-red);
+}
+.nav-tab.active {
+  background: var(--pku-red);
+  border-color: var(--pku-red);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ---------- 学生侧栏导航 ---------- */
+
+.nav-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.nav-sidebar-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 8px;
+}
+.nav-sidebar-btn {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.nav-sidebar-btn:hover {
+  background: var(--pku-red-light);
+  color: var(--pku-red);
+}
+.nav-sidebar-btn.active {
+  background: var(--pku-red);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ---------- 教师内容区（标签页直接填充，无卡片外框） ---------- */
+
+.right-pane-teacher {
+  min-height: 0;
+}
+.right-pane-teacher .card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- 学生助手欢迎语 ---------- */
+
+.tutor-welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+  padding: 24px 16px;
+}
+.tutor-welcome-title {
+  font-size: 26px;
+  color: var(--pku-red);
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.tutor-welcome-input {
+  max-width: 640px;
+  width: 100%;
+  border-top: 1px solid var(--card-border);
+  margin-top: 12px;
+}
+
+/* ---------- 本班资料合并视图（列表 + 预览） ---------- */
+
+.material-view {
+  display: flex;
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+}
+.material-view-left {
+  flex: 0 0 320px;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 2px;
+}
+.material-view-right {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---------- 学生名单表格 ---------- */
+
+.student-list-card {
+  height: 100%;
+  overflow-y: auto;
+}
+.student-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.student-table th {
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--pku-red-light);
+  color: var(--pku-red-dark);
+  font-weight: 600;
+  border-bottom: 1px solid var(--pku-red-border);
+}
+.student-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--card-border);
+}
+.student-table tr:last-child td {
+  border-bottom: none;
+}
+.student-table tr:hover td {
+  background: #fffafa;
+}
+.student-username {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+

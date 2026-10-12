@@ -129,13 +129,14 @@ func main() {
 	}
 
 	api := &server.API{
-		Users:     &auth.Repository{DB: database},
-		JWT:       jwtSvc,
-		Materials: materialsRepo,
-		Tickets:   tickets,
-		DB:        database,
-		Indexer:   idxQueue,
-		Vectors:   vectors,
+		Users:         &auth.Repository{DB: database},
+		ClassStudents: &auth.Repository{DB: database},
+		JWT:           jwtSvc,
+		Materials:     materialsRepo,
+		Tickets:       tickets,
+		DB:            database,
+		Indexer:       idxQueue,
+		Vectors:       vectors,
 		SearchSvc: &search.Service{
 			Embedder: embedder,
 			Vectors:  vectors,

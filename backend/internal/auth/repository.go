@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"campusclaw/internal/model"
 )
@@ -15,6 +16,42 @@ type Repository struct {
 
 // ErrInvalidCredentials 表示用户名不存在或密码错误（对外不区分）。
 var ErrInvalidCredentials = errors.New("用户名或密码错误")
+
+// StudentRow 是学生名单展示所需的最小字段集合。
+type StudentRow struct {
+	ID          int64     `json:"id"`
+	Username    string    `json:"username"`
+	DisplayName string    `json:"displayName"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// ListStudentsByClass 返回指定班级的全部学生，按加入时间升序。
+// 班级标识必须来自 JWT claims，调用方负责传入。
+func (r *Repository) ListStudentsByClass(ctx context.Context, classID int64) ([]StudentRow, error) {
+	rows, err := r.DB.QueryContext(ctx,
+		`SELECT id, username, display_name, created_at
+		   FROM users
+		  WHERE class_id = ? AND role = ?
+		  ORDER BY created_at, id`,
+		classID, model.RoleStudent,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StudentRow
+	for rows.Next() {
+		var s StudentRow
+		if err := rows.Scan(&s.ID, &s.Username, &s.DisplayName, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 // Authenticate 校验账号密码，成功返回带班级信息的用户。
 // 用户不存在与密码错误返回同一个错误，避免账号枚举。

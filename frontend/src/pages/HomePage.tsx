@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  askQuestion,
   askTutor,
   createConversation,
   createTicket,
@@ -9,28 +8,27 @@ import {
   fetchMe,
   fetchTutorMessages,
   getToken,
-  searchMaterials,
 } from '../api'
 import type {
   Citation,
   Locator,
   Material,
   Me,
-  QAResult,
-  SearchResult,
   TutorConversation,
   TutorMessage,
 } from '../types'
 import TopBar from '../components/TopBar'
-import UploadPanel from '../components/UploadPanel'
-import SearchPanel from '../components/SearchPanel'
-import QAPanel from '../components/QAPanel'
-import SearchResults from '../components/SearchResults'
-import QAResults from '../components/QAResults'
-import MaterialList from '../components/MaterialList'
-import Preview from '../components/Preview'
+import MaterialView from '../components/MaterialView'
 import AssistantPanel from '../components/AssistantPanel'
+import AssistantSettings from '../components/AssistantSettings'
+import SkillManagement from '../components/SkillManagement'
+import StudentList from '../components/StudentList'
 import TutorView from '../components/TutorView'
+
+// 教师标签页类型。
+type TeacherView = 'students' | 'materials' | 'settings' | 'skills'
+// 学生标签页类型。
+type StudentView = 'tutor' | 'materials'
 
 export default function HomePage() {
   const [me, setMe] = useState<Me | null>(null)
@@ -38,21 +36,11 @@ export default function HomePage() {
   const [selected, setSelected] = useState<Material | null>(null)
   const [loading, setLoading] = useState(true)
   const [downloadError, setDownloadError] = useState('')
-
-  // 右栏在「材料预览」「检索结果」「问答结果」「解题助手」四个视图间切换。
-  const [view, setView] = useState<'preview' | 'results' | 'qa' | 'tutor'>('preview')
-  const [searching, setSearching] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
-  const [searchError, setSearchError] = useState('')
   const [locatorHint, setLocatorHint] = useState<Locator | null>(null)
 
-  // 问答状态
-  const [qaLoading, setQaLoading] = useState(false)
-  const [qaQuestion, setQaQuestion] = useState('')
-  const [qaAnswer, setQaAnswer] = useState('')
-  const [qaCitations, setQaCitations] = useState<Citation[]>([])
-  const [qaError, setQaError] = useState('')
+  // 角色 view：教师默认学生名单，学生默认解题助手。
+  const [teacherView, setTeacherView] = useState<TeacherView>('students')
+  const [studentView, setStudentView] = useState<StudentView>('tutor')
 
   // 解题助手状态
   const [conversations, setConversations] = useState<TutorConversation[]>([])
@@ -85,44 +73,15 @@ export default function HomePage() {
         setMaterials(items)
         setLoading(false)
       }
+      // 学生默认进入解题助手，预加载会话列表。
+      if (!cancelled && u.role === 'student') {
+        loadConversations()
+      }
     })()
     return () => {
       cancelled = true
     }
   }, [])
-
-  async function handleSearch(query: string) {
-    setSearchQuery(query)
-    setSearching(true)
-    setSearchError('')
-    setSearchResults([])
-    setView('results')
-    try {
-      setSearchResults(await searchMaterials(query))
-    } catch (err) {
-      setSearchError(err instanceof Error ? err.message : '知识库检索暂不可用')
-    } finally {
-      setSearching(false)
-    }
-  }
-
-  async function handleAsk(question: string) {
-    setQaQuestion(question)
-    setQaLoading(true)
-    setQaError('')
-    setQaAnswer('')
-    setQaCitations([])
-    setView('qa')
-    try {
-      const result: QAResult = await askQuestion(question)
-      setQaAnswer(result.answer)
-      setQaCitations(result.citations)
-    } catch (err) {
-      setQaError(err instanceof Error ? err.message : '知识库问答暂不可用')
-    } finally {
-      setQaLoading(false)
-    }
-  }
 
   // ---------- 解题助手 ----------
 
@@ -132,9 +91,7 @@ export default function HomePage() {
     setStreamError('')
   }
 
-  // 进入助手视图并加载历史会话。
-  async function enterTutor() {
-    setView('tutor')
+  async function loadConversations() {
     setConvLoading(true)
     setStreamError('')
     try {
@@ -144,11 +101,6 @@ export default function HomePage() {
     } finally {
       setConvLoading(false)
     }
-  }
-
-  function exitTutor() {
-    if (streaming) abortRef.current?.abort()
-    setView('preview')
   }
 
   async function handleNewConversation() {
@@ -253,37 +205,18 @@ export default function HomePage() {
     }
   }
 
-  // 从助手消息打开材料预览（离开助手视图）。
+  // 从助手消息打开材料预览（学生切到资料库视图并定位）。
   function handleOpenTutorCitation(c: Citation) {
     const target = materials.find((m) => m.id === c.documentId)
     if (!target) return
     setSelected(target)
     setLocatorHint(c.locator)
-    setView('preview')
+    setStudentView('materials')
   }
 
   function handleViewMaterial(m: Material) {
     setLocatorHint(null)
     setSelected(m)
-    setView('preview')
-  }
-
-  // 点击检索结果徽标：只能在本班材料列表内定位；找不到对应材料时不发请求、不报错。
-  function handleOpenSource(r: SearchResult) {
-    const target = materials.find((m) => m.id === r.documentId)
-    if (!target) return
-    setSelected(target)
-    setLocatorHint(r.locator)
-    setView('preview')
-  }
-
-  // 点击问答引用徽标：打开对应材料预览。
-  function handleOpenCitation(c: Citation) {
-    const target = materials.find((m) => m.id === c.documentId)
-    if (!target) return
-    setSelected(target)
-    setLocatorHint(c.locator)
-    setView('preview')
   }
 
   async function handleDownload(m: Material) {
@@ -307,88 +240,129 @@ export default function HomePage() {
     return <div className="app-loading">正在校验登录状态…</div>
   }
 
+  const isTeacher = me.role === 'teacher'
+
   return (
     <div className="app">
       <TopBar me={me} />
-      <main className="layout">
-        <aside className="left-pane">
-          {view === 'tutor' ? (
-            <AssistantPanel
-              conversations={conversations}
-              activeId={activeConv?.id ?? null}
-              loading={convLoading}
-              creating={creatingConv}
-              onNew={handleNewConversation}
-              onSelect={handleSelectConversation}
-            />
-          ) : (
-            <>
-              <SearchPanel searching={searching} onSearch={handleSearch} />
-              <QAPanel loading={qaLoading} onAsk={handleAsk} />
-              <section className="card tutor-entry-card">
-                <div className="tutor-entry">
-                  <div className="tutor-entry-text">
-                    <h2 className="card-title">解题助手</h2>
-                    <p className="file-hint">多轮会话提问，流式呈现思路与引用</p>
-                  </div>
-                  <button className="btn btn-primary btn-small" type="button" onClick={enterTutor}>
-                    打开助手
-                  </button>
-                </div>
-              </section>
-              <UploadPanel onUploaded={(m) => setMaterials((prev) => [m, ...prev])} />
-              {downloadError && <div className="alert alert-error">{downloadError}</div>}
-              <MaterialList
-                materials={materials}
-                selectedId={selected?.id ?? null}
-                loading={loading}
-                onView={handleViewMaterial}
-                onDownload={handleDownload}
+      <main className={`layout ${isTeacher ? 'layout-teacher' : 'layout-student'}`}>
+        {isTeacher ? (
+          <>
+            <nav className="nav-tabs" aria-label="教师导航">
+              <button
+                type="button"
+                className={`nav-tab${teacherView === 'students' ? ' active' : ''}`}
+                onClick={() => setTeacherView('students')}
+              >
+                学生名单
+              </button>
+              <button
+                type="button"
+                className={`nav-tab${teacherView === 'materials' ? ' active' : ''}`}
+                onClick={() => setTeacherView('materials')}
+              >
+                本班资料
+              </button>
+              <button
+                type="button"
+                className={`nav-tab${teacherView === 'settings' ? ' active' : ''}`}
+                onClick={() => setTeacherView('settings')}
+              >
+                助手设置
+              </button>
+              <button
+                type="button"
+                className={`nav-tab${teacherView === 'skills' ? ' active' : ''}`}
+                onClick={() => setTeacherView('skills')}
+              >
+                技能管理
+              </button>
+            </nav>
+            <section className="right-pane right-pane-teacher">
+              {teacherView === 'students' ? (
+                <StudentList />
+              ) : teacherView === 'materials' ? (
+                <MaterialView
+                  me={me}
+                  materials={materials}
+                  selectedId={selected?.id ?? null}
+                  loading={loading}
+                  selected={selected}
+                  locatorHint={locatorHint}
+                  downloadError={downloadError}
+                  onView={handleViewMaterial}
+                  onDownload={handleDownload}
+                  onUploaded={(m) => setMaterials((prev) => [m, ...prev])}
+                  onClearHint={() => setLocatorHint(null)}
+                />
+              ) : teacherView === 'settings' ? (
+                <AssistantSettings />
+              ) : (
+                <SkillManagement />
+              )}
+            </section>
+          </>
+        ) : (
+          <>
+            <aside className="left-pane nav-sidebar">
+              <div className="nav-sidebar-buttons">
+                <button
+                  type="button"
+                  className={`nav-sidebar-btn${studentView === 'tutor' ? ' active' : ''}`}
+                  onClick={() => setStudentView('tutor')}
+                >
+                  解题助手
+                </button>
+                <button
+                  type="button"
+                  className={`nav-sidebar-btn${studentView === 'materials' ? ' active' : ''}`}
+                  onClick={() => setStudentView('materials')}
+                >
+                  资料库
+                </button>
+              </div>
+              <AssistantPanel
+                conversations={conversations}
+                activeId={activeConv?.id ?? null}
+                loading={convLoading}
+                creating={creatingConv}
+                onNew={handleNewConversation}
+                onSelect={(c) => {
+                  handleSelectConversation(c)
+                  setStudentView('tutor')
+                }}
               />
-            </>
-          )}
-        </aside>
-        <section className="right-pane">
-          {view === 'tutor' ? (
-            <TutorView
-              me={me}
-              conversation={activeConv}
-              messages={convMessages}
-              streaming={streaming}
-              streamCitations={streamCitations}
-              streamAnswer={streamAnswer}
-              streamError={streamError}
-              onAsk={handleAskTutor}
-              onExit={exitTutor}
-              onOpenCitation={handleOpenTutorCitation}
-            />
-          ) : view === 'results' ? (
-            <SearchResults
-              query={searchQuery}
-              results={searchResults}
-              searching={searching}
-              error={searchError}
-              onOpenSource={handleOpenSource}
-              onBack={() => setView('preview')}
-            />
-          ) : view === 'qa' ? (
-            <QAResults
-              question={qaQuestion}
-              answer={qaAnswer}
-              citations={qaCitations}
-              loading={qaLoading}
-              error={qaError}
-              onOpenSource={handleOpenCitation}
-              onBack={() => setView('preview')}
-            />
-          ) : (
-            <Preview
-              material={selected}
-              locatorHint={locatorHint}
-              onClearHint={() => setLocatorHint(null)}
-            />
-          )}
-        </section>
+            </aside>
+            <section className="right-pane">
+              {studentView === 'tutor' ? (
+                <TutorView
+                  conversation={activeConv}
+                  messages={convMessages}
+                  streaming={streaming}
+                  streamCitations={streamCitations}
+                  streamAnswer={streamAnswer}
+                  streamError={streamError}
+                  onAsk={handleAskTutor}
+                  onOpenCitation={handleOpenTutorCitation}
+                />
+              ) : (
+                <MaterialView
+                  me={me}
+                  materials={materials}
+                  selectedId={selected?.id ?? null}
+                  loading={loading}
+                  selected={selected}
+                  locatorHint={locatorHint}
+                  downloadError={downloadError}
+                  onView={handleViewMaterial}
+                  onDownload={handleDownload}
+                  onUploaded={(m) => setMaterials((prev) => [m, ...prev])}
+                  onClearHint={() => setLocatorHint(null)}
+                />
+              )}
+            </section>
+          </>
+        )}
       </main>
     </div>
   )

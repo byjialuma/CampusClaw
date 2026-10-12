@@ -4,6 +4,7 @@ import type {
   SearchResult,
   QAResult,
   Citation,
+  StudentInfo,
   TutorConversation,
   TutorMessage,
   TutorStreamEvent,
@@ -93,6 +94,17 @@ export async function fetchMe(): Promise<Me | null> {
   }
   if (status !== 200) throw new ApiError(status, '获取当前用户失败')
   return data
+}
+
+// 教师：本班学生名单（class_id 由服务端从 JWT claims 解析）。
+export async function fetchStudents(): Promise<StudentInfo[]> {
+  const { status, data } = await request<StudentInfo[] | { error: string }>('/api/class/students')
+  if (status === 401) handle401()
+  if (status !== 200) {
+    const msg = (data as { error?: string }).error ?? '加载学生名单失败'
+    throw new ApiError(status, msg)
+  }
+  return (data as StudentInfo[]) ?? []
 }
 
 export async function fetchMaterials(): Promise<Material[]> {

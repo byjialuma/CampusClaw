@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"campusclaw/internal/auth"
 	"campusclaw/internal/model"
 	qapkg "campusclaw/internal/qa"
 	searchpkg "campusclaw/internal/search"
@@ -19,6 +20,11 @@ const SessionCookie = "cc_session"
 // userAuthenticator 是最小的身份校验能力。
 type userAuthenticator interface {
 	Authenticate(ctx context.Context, username, password string) (*model.User, error)
+}
+
+// classStudentLister 是教师查看本班学生名单所需的最小能力（*auth.Repository 满足）。
+type classStudentLister interface {
+	ListStudentsByClass(ctx context.Context, classID int64) ([]auth.StudentRow, error)
 }
 
 // jwtVerifier 是 JWT 验签与签发的最小能力。
@@ -69,17 +75,18 @@ type qaService interface {
 
 // API 持有全部处理函数共享的依赖。
 type API struct {
-	Users      userAuthenticator
-	JWT        jwtVerifier
-	Materials  materialService
-	Tickets    ticketService
-	DB         pinger
-	Indexer    indexQueue
-	Vectors    vectorPinger
-	SearchSvc  knowledgeSearcher
-	QASvc      qaService
-	Tutor      tutorAsker
-	TutorStore tutorStore
+	Users         userAuthenticator
+	ClassStudents classStudentLister
+	JWT           jwtVerifier
+	Materials     materialService
+	Tickets       ticketService
+	DB            pinger
+	Indexer       indexQueue
+	Vectors       vectorPinger
+	SearchSvc     knowledgeSearcher
+	QASvc         qaService
+	Tutor         tutorAsker
+	TutorStore    tutorStore
 }
 
 // NewHandler 构建路由树：鉴权在各路由上显式包装。
@@ -94,6 +101,9 @@ func (a *API) NewHandler() http.Handler {
 
 	mux.HandleFunc("GET /api/search", a.requireAuth(a.searchKnowledge))
 	mux.HandleFunc("POST /api/qa", a.requireAuth(a.askQuestion))
+
+	// 班级学生名单：仅教师可调用，class_id 来自 JWT claims。
+	mux.HandleFunc("GET /api/class/students", a.requireAuth(a.requireTeacher(a.listClassStudents)))
 
 	// 解题助手：会话/消息/SSE 提问（登录即可），提示词与技能管理（仅教师）。
 	mux.HandleFunc("POST /api/tutor/conversations", a.requireAuth(a.createTutorConversation))

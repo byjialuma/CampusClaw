@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"campusclaw/internal/auth"
 	"campusclaw/internal/model"
 	qapkg "campusclaw/internal/qa"
 	"campusclaw/internal/store"
@@ -51,6 +52,28 @@ func (f *fakeUsers) Authenticate(_ context.Context, username, password string) (
 	}
 	cp := *u
 	return &cp, nil
+}
+
+// ListStudentsByClass 复刻服务端行为：仅返回指定班级的学生，按 ID 升序。
+func (f *fakeUsers) ListStudentsByClass(_ context.Context, classID int64) ([]auth.StudentRow, error) {
+	var out []auth.StudentRow
+	for _, u := range f.users {
+		if u.ClassID == classID && u.Role == model.RoleStudent {
+			out = append(out, auth.StudentRow{
+				ID:          u.ID,
+				Username:    u.Username,
+				DisplayName: u.DisplayName,
+				CreatedAt:   time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC).Add(time.Duration(u.ID) * time.Minute),
+			})
+		}
+	}
+	// 按时间稳定排序：fake 中以 ID 升序模拟"按加入时间"。
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].ID < out[j-1].ID; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out, nil
 }
 
 // fakeJWT 是内存中的 JWT 测试替身。
@@ -211,13 +234,15 @@ func (f *fakeQA) Ask(_ context.Context, question string, classID int64) (*qapkg.
 // ---------- 测试辅助 ----------
 
 func newTestAPI() *API {
+	fu := newFakeUsers()
 	return &API{
-		Users:     newFakeUsers(),
-		JWT:       newFakeJWT(),
-		Materials: newFakeMaterials(),
-		Tickets:   &fakeTickets{tickets: map[string]*model.Ticket{}},
-		DB:        &fakePinger{},
-		QASvc:     &fakeQA{result: &qapkg.Result{Answer: "test answer", Citations: []qapkg.Citation{}}},
+		Users:         fu,
+		ClassStudents: fu,
+		JWT:           newFakeJWT(),
+		Materials:     newFakeMaterials(),
+		Tickets:       &fakeTickets{tickets: map[string]*model.Ticket{}},
+		DB:            &fakePinger{},
+		QASvc:         &fakeQA{result: &qapkg.Result{Answer: "test answer", Citations: []qapkg.Citation{}}},
 	}
 }
 
@@ -486,6 +511,68 @@ func TestListIsFilteredBySessionClass(t *testing.T) {
 		if strings.Contains(m.OriginalName, "B班") {
 			t.Fatalf("列表不得出现 B 班材料: %s", m.OriginalName)
 		}
+	}
+}
+
+// ---------- 班级学生名单（仅教师） ----------
+
+func TestClassStudentsTeacherOnly(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// 教师 200 返回本班学生。
+	teacher := loginJarClient(t, srv.URL, "teacherA", "ta-pw")
+	resp, err := teacher.Get(srv.URL + "/api/class/students")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("教师调用期望 200，得到 %d", resp.StatusCode)
+	}
+	var rows []auth.StudentRow
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		t.Fatalf("解码失败: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("A 班应只有 1 名学生，得到 %d", len(rows))
+	}
+	if rows[0].Username != "studentA1" || rows[0].DisplayName != "学生A1" || rows[0].ID != 2 {
+		t.Fatalf("学生数据异常: %+v", rows[0])
+	}
+	if rows[0].CreatedAt.IsZero() {
+		t.Fatal("createdAt 必须非空")
+	}
+	// B 班学生不得出现在 A 班教师的结果中。
+	for _, s := range rows {
+		if s.Username == "studentB1" {
+			t.Fatalf("跨班学生不得出现: %+v", s)
+		}
+	}
+}
+
+func TestClassStudentsStudentForbidden(t *testing.T) {
+	srv, _ := newTestServer(t)
+	student := loginJarClient(t, srv.URL, "studentA1", "a1-pw")
+	resp, err := student.Get(srv.URL + "/api/class/students")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("学生调用期望 403，得到 %d", resp.StatusCode)
+	}
+}
+
+func TestClassStudentsRequiresAuth(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// 未携带 token。
+	resp, err := http.Get(srv.URL + "/api/class/students")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("未登录期望 401，得到 %d", resp.StatusCode)
 	}
 }
 

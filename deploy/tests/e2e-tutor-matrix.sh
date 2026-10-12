@@ -198,6 +198,26 @@ printf 'student skill' > /tmp/ccstu_skill.md
 check "学生上传技能 403" 403 "$(upload_skill "$A1_TOKEN" /tmp/ccstu_skill.md text/markdown)"
 check "学生 DELETE skill 403" 403 "$(del /api/tutor/assistant/skills/1 "$A1_TOKEN")"
 
+echo "== 班级学生名单（仅教师） =="
+check "教师 GET /api/class/students 200" 200 "$(get /api/class/students "$T_TOKEN")"
+ok_if "学生名单含 A1 用户名" 'grep -q "\"username\":\"$A1_USER\"" "$BODY"'
+ok_if "学生名单不含 B1（跨班不暴露）" '! grep -q "\"username\":\"$B1_USER\"" "$BODY"'
+ok_if "学生名单含 displayName 字段" 'grep -q "\"displayName\":" "$BODY"'
+ok_if "学生名单含 createdAt 字段" 'grep -q "\"createdAt\":" "$BODY"'
+check "学生 GET /api/class/students 403" 403 "$(get /api/class/students "$A1_TOKEN")"
+check "未登录 GET /api/class/students 401" 401 "$(get /api/class/students)"
+
+echo "== 前端首页无检索/问答独立入口 =="
+# /api/search 与 /api/qa 路由保留（解题助手 RAG 复用），但前端不再暴露独立视图。
+# 直连 backend 时 GET / 返回 404（后端不托管前端），仅在经 Nginx 时验证 HTML 内容。
+HOME_CODE=$(curl -s -o "$BODY" -w '%{http_code}' "$BASE/")
+if [ "$HOME_CODE" = "200" ]; then
+  ok_if "首页 HTML 不含「知识库检索」入口文案" '! grep -q "知识库检索" "$BODY"'
+  ok_if "首页 HTML 不含「知识问答」入口文案" '! grep -q "知识问答" "$BODY"'
+else
+  echo "INFO: GET / 返回 $HOME_CODE（直连 backend 不托管前端，跳过 HTML 内容检查）"
+fi
+
 echo "== 教师配置生命周期 =="
 check "教师 GET assistant 200" 200 "$(get /api/tutor/assistant "$T_TOKEN")"
 # 班内可能并存基线示例技能，按名称精确定位「解题引导」的 id。

@@ -1,9 +1,7 @@
 import { FormEvent, useState } from 'react'
-import type { Citation, Me, TutorConversation, TutorMessage } from '../types'
-import AssistantSettings from './AssistantSettings'
+import type { Citation, TutorConversation, TutorMessage } from '../types'
 
 interface Props {
-  me: Me
   conversation: TutorConversation | null
   messages: TutorMessage[]
   streaming: boolean
@@ -11,7 +9,6 @@ interface Props {
   streamAnswer: string
   streamError: string
   onAsk: (question: string) => void
-  onExit: () => void
   onOpenCitation: (c: Citation) => void
 }
 
@@ -58,9 +55,9 @@ function CitationCards({
   )
 }
 
-// TutorView 右栏：消息流（meta 引用卡片先于正文呈现）+ 追问输入。
+// TutorView 对话主区：欢迎语 → 消息流 → 输入框。
+// 不再内嵌设置/技能管理标签页——标签页由外层 HomePage 驱动。
 export default function TutorView({
-  me,
   conversation,
   messages,
   streaming,
@@ -68,11 +65,9 @@ export default function TutorView({
   streamAnswer,
   streamError,
   onAsk,
-  onExit,
   onOpenCitation,
 }: Props) {
   const [draft, setDraft] = useState('')
-  const [tab, setTab] = useState<'chat' | 'settings'>('chat')
 
   function onSubmit(e: FormEvent) {
     e.preventDefault()
@@ -86,98 +81,79 @@ export default function TutorView({
   const showLiveTurn =
     streaming || streamCitations.length > 0 || streamAnswer.length > 0 || streamError.length > 0
 
-  const isTeacher = me.role === 'teacher'
-  const showSettings = isTeacher && tab === 'settings'
+  // 无活跃会话时显示欢迎语；有会话但无消息时不显示欢迎语，保持简洁。
+  const showWelcome = !conversation
 
   return (
     <section className="card preview-card tutor-view">
-      <div className="search-results-head tutor-head">
-        <h2 className="card-title">
-          解题助手{conversation ? ` · ${conversation.title}` : ''}
-        </h2>
-        <div className="tutor-head-actions">
-          {isTeacher && (
-            <div className="tutor-tabs">
-              <button
-                type="button"
-                className={`tutor-tab${tab === 'chat' ? ' active' : ''}`}
-                onClick={() => setTab('chat')}
-              >
-                对话
-              </button>
-              <button
-                type="button"
-                className={`tutor-tab${tab === 'settings' ? ' active' : ''}`}
-                onClick={() => setTab('settings')}
-              >
-                设置
-              </button>
-            </div>
-          )}
-          <button type="button" className="btn btn-small" onClick={onExit}>
-            返回材料页
-          </button>
+      {showWelcome ? (
+        <div className="tutor-welcome">
+          <h2 className="tutor-welcome-title">解题助手，我帮你</h2>
+          <p className="muted">在下方输入你的第一个问题，开始一段新的解题会话。</p>
+          <form className="tutor-input-row tutor-welcome-input" onSubmit={onSubmit}>
+            <input
+              className="search-input tutor-input"
+              type="text"
+              maxLength={500}
+              value={draft}
+              disabled={streaming}
+              placeholder={streaming ? '助手正在生成回答…' : '输入你的问题，回车发送'}
+              aria-label="向解题助手提问"
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <button className="btn btn-primary" type="submit" disabled={streaming || !draft.trim()}>
+              {streaming ? '思考中…' : '发送'}
+            </button>
+          </form>
         </div>
-      </div>
-
-      {showSettings ? (
-        <AssistantSettings />
       ) : (
         <>
-          {!conversation ? (
-            <div className="tutor-empty">
-              <p className="muted">请先在左侧点击「新会话」，然后输入你的题目。</p>
-            </div>
-          ) : (
-            <>
-              <div className="tutor-messages">
-                {messages.length === 0 && !showLiveTurn && (
-                  <p className="muted tutor-empty-hint">会话已就绪，在下方输入你的第一个问题。</p>
-                )}
+          <div className="tutor-messages">
+            {messages.length === 0 && !showLiveTurn && (
+              <p className="muted tutor-empty-hint">会话已就绪，在下方输入你的问题。</p>
+            )}
 
-                {messages.map((m) => (
-                  <div key={m.id} className={`tutor-message tutor-message-${m.role}`}>
-                    <div className="tutor-bubble">
-                      <p className="tutor-text">{m.content}</p>
-                    </div>
-                    <CitationCards citations={m.citations ?? []} onOpenCitation={onOpenCitation} />
-                  </div>
-                ))}
-
-                {showLiveTurn && (
-                  <div className="tutor-message tutor-message-assistant">
-                    {/* meta 先到：引用卡片在正文之前渲染 */}
-                    <CitationCards citations={streamCitations} onOpenCitation={onOpenCitation} />
-                    <div className="tutor-bubble">
-                      {streamAnswer ? (
-                        <p className="tutor-text">{streamAnswer}</p>
-                      ) : (
-                        !streamError && <p className="tutor-text tutor-placeholder">正在检索本班资料…</p>
-                      )}
-                      {streaming && <span className="tutor-cursor" aria-hidden />}
-                    </div>
-                    {streamError && <div className="alert alert-error tutor-stream-error">{streamError}</div>}
-                  </div>
-                )}
+            {messages.map((m) => (
+              <div key={m.id} className={`tutor-message tutor-message-${m.role}`}>
+                <div className="tutor-bubble">
+                  <p className="tutor-text">{m.content}</p>
+                </div>
+                <CitationCards citations={m.citations ?? []} onOpenCitation={onOpenCitation} />
               </div>
+            ))}
 
-              <form className="tutor-input-row" onSubmit={onSubmit}>
-                <input
-                  className="search-input tutor-input"
-                  type="text"
-                  maxLength={500}
-                  value={draft}
-                  disabled={streaming}
-                  placeholder={streaming ? '助手正在生成回答…' : '输入追问，回车发送'}
-                  aria-label="向解题助手追问"
-                  onChange={(e) => setDraft(e.target.value)}
-                />
-                <button className="btn btn-primary" type="submit" disabled={streaming || !draft.trim()}>
-                  {streaming ? '思考中…' : '发送'}
-                </button>
-              </form>
-            </>
-          )}
+            {showLiveTurn && (
+              <div className="tutor-message tutor-message-assistant">
+                {/* meta 先到：引用卡片在正文之前渲染 */}
+                <CitationCards citations={streamCitations} onOpenCitation={onOpenCitation} />
+                <div className="tutor-bubble">
+                  {streamAnswer ? (
+                    <p className="tutor-text">{streamAnswer}</p>
+                  ) : (
+                    !streamError && <p className="tutor-text tutor-placeholder">正在检索本班资料…</p>
+                  )}
+                  {streaming && <span className="tutor-cursor" aria-hidden />}
+                </div>
+                {streamError && <div className="alert alert-error tutor-stream-error">{streamError}</div>}
+              </div>
+            )}
+          </div>
+
+          <form className="tutor-input-row" onSubmit={onSubmit}>
+            <input
+              className="search-input tutor-input"
+              type="text"
+              maxLength={500}
+              value={draft}
+              disabled={streaming}
+              placeholder={streaming ? '助手正在生成回答…' : '输入追问，回车发送'}
+              aria-label="向解题助手追问"
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <button className="btn btn-primary" type="submit" disabled={streaming || !draft.trim()}>
+              {streaming ? '思考中…' : '发送'}
+            </button>
+          </form>
         </>
       )}
     </section>
