@@ -103,6 +103,9 @@ func (a *API) NewHandler() http.Handler {
 	mux.HandleFunc("GET /api/tutor/assistant", a.requireAuth(a.requireTeacher(a.getTutorAssistant)))
 	mux.HandleFunc("PUT /api/tutor/assistant/prompt", a.requireAuth(a.requireTeacher(a.saveTutorPrompt)))
 	mux.HandleFunc("PUT /api/tutor/assistant/skills/{id}", a.requireAuth(a.requireTeacher(a.putTutorSkill)))
+	mux.HandleFunc("POST /api/tutor/assistant/skills", a.requireAuth(a.requireTeacher(a.createTutorSkill)))
+	mux.HandleFunc("POST /api/tutor/assistant/skills/upload", a.requireAuth(a.requireTeacher(a.uploadTutorSkill)))
+	mux.HandleFunc("DELETE /api/tutor/assistant/skills/{id}", a.requireAuth(a.requireTeacher(a.deleteTutorSkill)))
 
 	mux.HandleFunc("GET /api/materials", a.requireAuth(a.listMaterials))
 	mux.HandleFunc("POST /api/materials", a.requireAuth(a.requireTeacher(a.uploadMaterial)))

@@ -67,6 +67,15 @@ put_json() { # path token json
     -H "Authorization: Bearer $2" -X PUT --data-binary "$3" "$BASE$1"
 }
 
+del() { # path token
+  curl -s -o "$BODY" -w '%{http_code}' -H "Authorization: Bearer $2" -X DELETE "$BASE$1"
+}
+
+upload_skill() { # token filepath mime
+  curl -s -o "$BODY" -w '%{http_code}' -H "Authorization: Bearer $1" \
+    -F "file=@$2;type=$3" "$BASE/api/tutor/assistant/skills/upload"
+}
+
 countof() { # pattern [file]
   f="${2:-$BODY}"
   grep -o "$1" "$f" | wc -l | tr -d ' '
@@ -184,6 +193,10 @@ echo "== 学生访问教师配置 403 =="
 check "学生 GET assistant 403" 403 "$(get /api/tutor/assistant "$A1_TOKEN")"
 check "学生 PUT prompt 403" 403 "$(put_json /api/tutor/assistant/prompt "$A1_TOKEN" '{"systemPrompt":"x"}')"
 check "学生 PUT skill 403" 403 "$(put_json /api/tutor/assistant/skills/1 "$A1_TOKEN" '{"enabled":false}')"
+check "学生 POST skills 403" 403 "$(post_json /api/tutor/assistant/skills "$A1_TOKEN" '{"name":"x","content":"y"}')"
+printf 'student skill' > /tmp/ccstu_skill.md
+check "学生上传技能 403" 403 "$(upload_skill "$A1_TOKEN" /tmp/ccstu_skill.md text/markdown)"
+check "学生 DELETE skill 403" 403 "$(del /api/tutor/assistant/skills/1 "$A1_TOKEN")"
 
 echo "== 教师配置生命周期 =="
 check "教师 GET assistant 200" 200 "$(get /api/tutor/assistant "$T_TOKEN")"
@@ -204,6 +217,29 @@ check "重新启用解题引导 200" 200 "$(put_json /api/tutor/assistant/skills
 check "GET 确认技能启用" 200 "$(get /api/tutor/assistant "$T_TOKEN")"
 ok_if "技能 enabled=true" "grep -q '\"enabled\":true' \"$BODY\""
 
+echo "== 技能管理扩展：新建/上传/启停 =="
+check "在线新建技能 201" 201 "$(post_json /api/tutor/assistant/skills "$T_TOKEN" '{"name":"英语写作","content":"用英文润色关键术语表达。"}')"
+NEW_SKILL_ID=$(sed -n 's/.*"id":\([0-9]*\).*/\1/p' "$BODY")
+ok_if "新建技能返回 id" '[ -n "$NEW_SKILL_ID" ]'
+ok_if "新建技能 source=online" 'grep -q "\"source\":\"online\"" "$BODY"'
+ok_if "新建技能默认停用" 'grep -q "\"enabled\":false" "$BODY"'
+
+printf '# 审题清单\n先标注已知量与未知量。' > /tmp/ccskill_up.md
+check "上传技能 md 201" 201 "$(upload_skill "$T_TOKEN" /tmp/ccskill_up.md text/markdown)"
+UP_SKILL_ID=$(sed -n 's/.*"id":\([0-9]*\).*/\1/p' "$BODY")
+ok_if "上传技能默认名=文件名去扩展" 'grep -q "\"name\":\"ccskill_up\"" "$BODY"'
+ok_if "上传技能 source=upload" 'grep -q "\"source\":\"upload\"" "$BODY"'
+
+printf '%%PDF-1.4 fake' > /tmp/ccskill_bad.pdf
+check "上传技能 pdf 400" 400 "$(upload_skill "$T_TOKEN" /tmp/ccskill_bad.pdf application/pdf)"
+
+check "GET assistant 含新建技能" 200 "$(get /api/tutor/assistant "$T_TOKEN")"
+ok_if "列表含英语写作" 'grep -q "\"name\":\"英语写作\"" "$BODY"'
+ok_if "列表含 content 字段" 'grep -q "\"content\":" "$BODY"'
+ok_if "列表含内置徽标 builtin=true" 'grep -q "\"builtin\":true" "$BODY"'
+
+check "启用新建技能 200" 200 "$(put_json /api/tutor/assistant/skills/$NEW_SKILL_ID "$T_TOKEN" '{"enabled":true}')"
+
 echo "== SSE 首轮提问：meta -> delta -> done =="
 TIMES=$(time_sse "$A1_TOKEN" "$CID" '{"question":"什么是集合？"}' "$SSE")
 M_POS=$(grep -n -m1 '^event: meta' "$SSE" | cut -d: -f1)
@@ -216,7 +252,8 @@ ok_if "顺序 meta<delta<done" '[ -n "$M_POS" ] && [ -n "$D_POS" ] && [ -n "$Z_P
 ok_if "无 error 事件" '! grep -q "^event: error" "$SSE"'
 
 extract_meta "$SSE" "$META"
-ok_if "meta 报告 skillEnabled=true" 'grep -q "\"skillEnabled\":true" "$META"'
+ok_if "meta.skills 含解题引导" 'grep -q "\"name\":\"解题引导\"" "$META"'
+ok_if "meta.skills 含已启用的新建技能" 'grep -q "\"name\":\"英语写作\"" "$META"'
 GOT_IDS=$(grep -o '"documentId":[0-9]*' "$META" | cut -d: -f2 | sort -n -u | tr '\n' ' ')
 ok_if "首轮引用全部属于 A 班: $GOT_IDS" "all_in \"$GOT_IDS\" \"$A_IDS\""
 
@@ -253,6 +290,8 @@ DOC_N=$(countof '"documentId"')
 ok_if "持久化 3 轮 user 消息（实际 $USER_N）" '[ "$USER_N" = "3" ]'
 ok_if "持久化 3 轮 assistant 消息（实际 $AST_N）" '[ "$AST_N" = "3" ]'
 ok_if "assistant 消息带有已持久化引用（$DOC_N 处）" '[ "$DOC_N" -gt 0 ]'
+ok_if "assistant 消息带 skillsUsed 快照" 'grep -q "\"skillsUsed\":\[{" "$BODY"'
+ok_if "skillsUsed 快照含解题引导" 'grep -q "\"skillsUsed\":\[{" "$BODY" && grep -q "\"name\":\"解题引导\"" "$BODY"'
 
 check "会话列表标题已更新为首问" 200 "$(get /api/tutor/conversations "$A1_TOKEN")"
 ok_if "标题=「什么是集合？」" "grep -q '\"title\":\"什么是集合？\"' \"$BODY\""
@@ -299,6 +338,15 @@ F_USER=$(countof '"role":"user"')
 F_AST=$(countof '"role":"assistant"')
 ok_if "第四轮已持久化（user=4，实际 $F_USER）" '[ "$F_USER" = "4" ]'
 ok_if "第四轮 assistant 已持久化（实际 $F_AST）" '[ "$F_AST" = "4" ]'
+
+echo "== 技能删除与内置保护 =="
+check "删除上传技能 200" 200 "$(del /api/tutor/assistant/skills/$UP_SKILL_ID "$T_TOKEN")"
+check "删除新建技能 200" 200 "$(del /api/tutor/assistant/skills/$NEW_SKILL_ID "$T_TOKEN")"
+check "删除内置解题引导 409" 409 "$(del /api/tutor/assistant/skills/$SKILL_ID "$T_TOKEN")"
+check "删除不存在技能 404" 404 "$(del /api/tutor/assistant/skills/999999 "$T_TOKEN")"
+check "GET 确认内置仍在" 200 "$(get /api/tutor/assistant "$T_TOKEN")"
+ok_if "内置解题引导仍在列表" 'grep -q "\"name\":\"解题引导\"" "$BODY"'
+ok_if "自建技能已从列表移除" '! grep -q "\"name\":\"英语写作\"" "$BODY"'
 
 echo
 echo "RESULT: PASS=$PASS FAIL=$FAIL"

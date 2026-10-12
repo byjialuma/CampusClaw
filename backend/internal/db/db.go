@@ -65,8 +65,48 @@ func EnsureSchema(ctx context.Context, db *sql.DB) error {
 		"ALTER TABLE assistants ADD COLUMN system_prompt TEXT NULL"); err != nil {
 		return err
 	}
-	return ensureColumn(ctx, db, "skills", "enabled",
-		"ALTER TABLE skills ADD COLUMN enabled TINYINT(1) NOT NULL DEFAULT 0")
+	if err := ensureColumn(ctx, db, "skills", "enabled",
+		"ALTER TABLE skills ADD COLUMN enabled TINYINT(1) NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "skills", "content",
+		"ALTER TABLE skills ADD COLUMN content MEDIUMTEXT NULL"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "skills", "source",
+		"ALTER TABLE skills ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'custom'"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "skills", "builtin",
+		"ALTER TABLE skills ADD COLUMN builtin TINYINT(1) NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "messages", "skills_used",
+		"ALTER TABLE messages ADD COLUMN skills_used JSON NULL"); err != nil {
+		return err
+	}
+	// 技能名称上限 120 字（设计 §6 校验口径），存量库的 VARCHAR(64) 需幂等扩宽。
+	return ensureVarcharMin(ctx, db, "skills", "name", 120,
+		"ALTER TABLE skills MODIFY COLUMN name VARCHAR(120) NOT NULL")
+}
+
+// ensureVarcharMin 在 VARCHAR 列长度低于 minLen 时执行扩宽 DDL；达标则跳过。
+func ensureVarcharMin(ctx context.Context, db *sql.DB, table, column string, minLen int, ddl string) error {
+	var n sql.NullInt64
+	err := db.QueryRowContext(ctx,
+		`SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS
+		  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+		table, column).Scan(&n)
+	if err != nil {
+		return fmt.Errorf("检查 %s.%s 列宽失败: %w", table, column, err)
+	}
+	if n.Valid && n.Int64 >= int64(minLen) {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("扩宽 %s.%s 列失败: %w", table, column, err)
+	}
+	return nil
 }
 
 // ensureColumn 在列缺失时执行补列 DDL；已存在则跳过（幂等升级存量库）。

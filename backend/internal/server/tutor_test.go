@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -91,13 +92,14 @@ type storedMessage struct {
 
 // srvTutorStore 同时满足 server.tutorStore 与 tutor.Repo 两个接口。
 type srvTutorStore struct {
-	mu       sync.Mutex
-	convs    map[int64]*tutorpkg.Conversation
-	messages map[int64][]storedMessage
-	prompts  map[int64]string
-	skills   map[int64][]tutorpkg.Skill
-	nextConv int64
-	nextMsg  int64
+	mu        sync.Mutex
+	convs     map[int64]*tutorpkg.Conversation
+	messages  map[int64][]storedMessage
+	prompts   map[int64]string
+	skills    map[int64][]tutorpkg.Skill
+	nextConv  int64
+	nextMsg   int64
+	nextSkill int64
 }
 
 func newSrvTutorStore() *srvTutorStore {
@@ -109,8 +111,10 @@ func newSrvTutorStore() *srvTutorStore {
 			2: "你是B班数学助教。",
 		},
 		skills: map[int64][]tutorpkg.Skill{
-			1: {{ID: 50, Name: "解题引导", Description: "引导", Enabled: true}},
-			2: {{ID: 60, Name: "解题引导", Description: "引导", Enabled: true}},
+			1: {{ID: 50, Name: "解题引导", Description: "引导", Content: "学生正在解题，请给出解题思路与步骤引导。",
+				Source: "seed", Builtin: true, Enabled: true}},
+			2: {{ID: 60, Name: "解题引导", Description: "引导", Content: "学生正在解题，请给出解题思路与步骤引导。",
+				Source: "seed", Builtin: true, Enabled: true}},
 		},
 	}
 }
@@ -201,6 +205,33 @@ func (s *srvTutorStore) SetSkillEnabled(_ context.Context, classID, skillID int6
 		return tutorpkg.ErrSkillNotFound
 	}
 	return nil
+}
+
+func (s *srvTutorStore) CreateSkill(_ context.Context, classID int64, name, content, source string) (*tutorpkg.Skill, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.prompts[classID]; !ok {
+		return nil, tutorpkg.ErrAssistantNotFound
+	}
+	s.nextSkill++
+	sk := tutorpkg.Skill{ID: s.nextSkill, Name: name, Content: content, Source: source}
+	s.skills[classID] = append(s.skills[classID], sk)
+	return &sk, nil
+}
+
+func (s *srvTutorStore) DeleteSkill(_ context.Context, classID, skillID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, sk := range s.skills[classID] {
+		if sk.ID == skillID {
+			if sk.Builtin {
+				return tutorpkg.ErrSkillBuiltinProtected
+			}
+			s.skills[classID] = append(s.skills[classID][:i], s.skills[classID][i+1:]...)
+			return nil
+		}
+	}
+	return tutorpkg.ErrSkillNotFound
 }
 
 func (s *srvTutorStore) RenameConversationIfEmpty(_ context.Context, convID int64, question string) error {
@@ -442,13 +473,14 @@ func TestTutorAskSSESequenceAndPersistence(t *testing.T) {
 		t.Fatalf("应有 4 个事件，得到 %d: %+v", len(events), events)
 	}
 
-	// meta 在最前：引用 + skillEnabled。
+	// meta 在最前：引用 + 启用技能快照。
 	if events[0].event != "meta" {
 		t.Fatal("首个事件必须是 meta")
 	}
 	var meta sseMetaPayload
 	json.Unmarshal([]byte(events[0].data), &meta)
-	if !meta.SkillEnabled || len(meta.Citations) != 1 {
+	if len(meta.Skills) != 1 || meta.Skills[0].ID != 50 || meta.Skills[0].Name != "解题引导" ||
+		len(meta.Citations) != 1 {
 		t.Fatalf("meta 载荷错误: %s", events[0].data)
 	}
 	c := meta.Citations[0]
@@ -485,7 +517,8 @@ func TestTutorAskSSESequenceAndPersistence(t *testing.T) {
 	}
 	a := persisted[1].m
 	if a.Role != tutorpkg.RoleAssistant || a.Content != "先回顾定义" ||
-		len(a.Citations) != 1 || a.PromptUsed != "你是一位严格的数学助教。" || !a.SkillEnabled {
+		len(a.Citations) != 1 || a.PromptUsed != "你是一位严格的数学助教。" ||
+		len(a.SkillsUsed) != 1 || a.SkillsUsed[0].ID != 50 {
 		t.Fatalf("assistant 持久化错误: %+v", a)
 	}
 
@@ -548,6 +581,9 @@ func TestTutorRoutesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/api/tutor/assistant"},
 		{http.MethodPut, "/api/tutor/assistant/prompt"},
 		{http.MethodPut, "/api/tutor/assistant/skills/1"},
+		{http.MethodPost, "/api/tutor/assistant/skills"},
+		{http.MethodPost, "/api/tutor/assistant/skills/upload"},
+		{http.MethodDelete, "/api/tutor/assistant/skills/1"},
 	} {
 		req, _ := http.NewRequest(tc.method, tc.path, strings.NewReader("{}"))
 		rec := httptest.NewRecorder()
@@ -587,6 +623,20 @@ func TestTutorStudentManagementForbidden(t *testing.T) {
 	api.NewHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("学生开关技能期望 403，得到 %d", rec.Code)
+	}
+
+	// POST 新建技能 / POST 上传技能 / DELETE 技能
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodPost, "/api/tutor/assistant/skills", `{"name":"x","content":"y"}`},
+		{http.MethodPost, "/api/tutor/assistant/skills/upload", `{}`},
+		{http.MethodDelete, "/api/tutor/assistant/skills/50", ``},
+	} {
+		req = signedReq(t, api, testUser("studentA1"), tc.method, tc.path, strings.NewReader(tc.body))
+		rec = httptest.NewRecorder()
+		api.NewHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("学生 %s %s 期望 403，得到 %d", tc.method, tc.path, rec.Code)
+		}
 	}
 }
 
@@ -653,6 +703,127 @@ func TestTutorTeacherConfigLifecycle(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &cfg)
 	if cfg.SystemPrompt != "你是引导式助教" || cfg.Skills[0].Enabled {
 		t.Fatalf("更新未持久化: %+v", cfg)
+	}
+}
+
+// ---------- 教师技能管理生命周期（新建/上传/开关/删除 + 内置保护 + 校验） ----------
+
+func TestTutorTeacherSkillCRUDLifecycle(t *testing.T) {
+	store := newSrvTutorStore()
+	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, nil, nil)
+	// 在线新建：201，默认停用，来源 online。
+	req := signedReq(t, api, testUser("teacherA"), http.MethodPost, "/api/tutor/assistant/skills",
+		strings.NewReader(`{"name":"英语写作","content":"用英文润色关键术语表达。"}`))
+	rec := httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("在线新建技能期望 201，得到 %d: %s", rec.Code, rec.Body)
+	}
+	var created tutorpkg.Skill
+	json.Unmarshal(rec.Body.Bytes(), &created)
+	if created.ID <= 0 || created.Name != "英语写作" || created.Source != tutorpkg.SkillSourceOnline ||
+		created.Enabled || created.Content != "用英文润色关键术语表达。" {
+		t.Fatalf("新建技能字段错误: %+v", created)
+	}
+
+	// 上传 md 文件：文件名去扩展名作为默认名称，来源 upload。
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "审题清单.md")
+	fw.Write([]byte("# 审题清单\n先标注已知量与未知量。"))
+	mw.Close()
+	req = signedReq(t, api, testUser("teacherA"), http.MethodPost, "/api/tutor/assistant/skills/upload", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("上传技能期望 201，得到 %d: %s", rec.Code, rec.Body)
+	}
+	var uploaded tutorpkg.Skill
+	json.Unmarshal(rec.Body.Bytes(), &uploaded)
+	if uploaded.Name != "审题清单" || uploaded.Source != tutorpkg.SkillSourceUpload ||
+		!strings.Contains(uploaded.Content, "先标注已知量与未知量") {
+		t.Fatalf("上传技能字段错误: %+v", uploaded)
+	}
+
+	// 启用新建技能 → 出现在 GET 列表；编排配置可见（AssistantConfig 含新技能）。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodPut,
+		fmt.Sprintf("/api/tutor/assistant/skills/%d", created.ID), strings.NewReader(`{"enabled":true}`))
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("启用技能期望 200，得到 %d", rec.Code)
+	}
+	req = signedReq(t, api, testUser("teacherA"), http.MethodGet, "/api/tutor/assistant", nil)
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	var cfg assistantResponse
+	json.Unmarshal(rec.Body.Bytes(), &cfg)
+	if len(cfg.Skills) != 3 || !cfg.Skills[1].Enabled {
+		t.Fatalf("技能列表应含 3 条且新建技能已启用: %+v", cfg.Skills)
+	}
+
+	// 删除上传的自建技能 → 200，列表中消失。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodDelete,
+		fmt.Sprintf("/api/tutor/assistant/skills/%d", uploaded.ID), nil)
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("删除自建技能期望 200，得到 %d", rec.Code)
+	}
+
+	// 删除内置技能 → 409。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodDelete, "/api/tutor/assistant/skills/50", nil)
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("删除内置技能期望 409，得到 %d", rec.Code)
+	}
+
+	// 删除不存在的技能 → 404。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodDelete, "/api/tutor/assistant/skills/999", nil)
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("删除不存在技能期望 404，得到 %d", rec.Code)
+	}
+}
+
+// 技能入参校验：名称/内容必填与超长，上传扩展名/大小限制。
+func TestTutorSkillValidation400(t *testing.T) {
+	api, _ := newTutorTestAPI(newSrvTutorStore(), &srvFakeStreamLLM{}, nil, nil)
+	longName := strings.Repeat("长", 121)
+	longContent := strings.Repeat("字", 20001)
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"空名称", `{"name":"  ","content":"c"}`},
+		{"空内容", `{"name":"n","content":"  "}`},
+		{"名称超长", fmt.Sprintf(`{"name":%q,"content":"c"}`, longName)},
+		{"内容超长", fmt.Sprintf(`{"name":"n","content":%q}`, longContent)},
+	} {
+		req := signedReq(t, api, testUser("teacherA"), http.MethodPost,
+			"/api/tutor/assistant/skills", strings.NewReader(tc.body))
+		rec := httptest.NewRecorder()
+		api.NewHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s 期望 400，得到 %d", tc.name, rec.Code)
+		}
+	}
+
+	// 上传 .pdf → 400。
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "笔记.pdf")
+	fw.Write([]byte("not-a-skill"))
+	mw.Close()
+	req := signedReq(t, api, testUser("teacherA"), http.MethodPost, "/api/tutor/assistant/skills/upload", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("非 md/txt 上传期望 400，得到 %d", rec.Code)
 	}
 }
 
@@ -783,7 +954,7 @@ func TestTutorRealClientCancelPersistsPartial(t *testing.T) {
 	}
 	a := persisted[1].m
 	if a.Role != tutorpkg.RoleAssistant || a.Content != "部分" ||
-		len(a.Citations) != 1 || a.PromptUsed == "" || !a.SkillEnabled {
+		len(a.Citations) != 1 || a.PromptUsed == "" || len(a.SkillsUsed) != 1 {
 		t.Fatalf("断连部分持久化错误: %+v", a)
 	}
 }

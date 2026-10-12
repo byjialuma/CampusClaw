@@ -782,10 +782,12 @@ body {
 /* ---------- 教师助手设置 ---------- */
 
 .assistant-settings {
-  flex: none;
-  margin-bottom: 12px;
-  border-top: 1px dashed var(--card-border);
-  padding-top: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin-bottom: 0;
+  border-top: none;
+  padding-top: 4px;
 }
 .assistant-settings .card-title {
   margin-bottom: 10px;
@@ -863,14 +865,127 @@ body {
   color: var(--pku-red-dark);
   font-weight: 600;
 }
+.skill-toggle-row {
+  cursor: default;
+}
+.skill-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.skill-source {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--card-border);
+  color: var(--ink-soft);
+}
+.skill-source.src-seed {
+  color: var(--pku-red-dark);
+  border-color: var(--pku-red-border);
+  background: var(--pku-red-light);
+}
+.skill-content-detail {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.skill-content-detail summary {
+  cursor: pointer;
+  user-select: none;
+}
+.skill-content-view {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: #fafafa;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow: auto;
+  font-family: inherit;
+  color: var(--ink);
+}
+.skill-delete {
+  flex: none;
+}
+.skill-delete:disabled {
+  opacity: 0.45;
+}
+.skill-add-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.skill-create-form {
+  margin-top: 10px;
+  border: 1px dashed var(--card-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skill-name-input {
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13.5px;
+  font-family: inherit;
+  color: var(--ink);
+}
+.skill-name-input:focus {
+  outline: none;
+  border-color: var(--pku-red);
+  box-shadow: 0 0 0 2px rgba(148, 7, 10, 0.12);
+}
 
 /* ---------- 助手会话视图 ---------- */
 
 .tutor-view {
   padding: 16px 18px;
 }
+.tutor-head {
+  flex: none;
+}
 .tutor-head .card-title {
   margin: 0;
+}
+.tutor-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tutor-tabs {
+  display: flex;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.tutor-tab {
+  border: none;
+  background: #fff;
+  color: var(--ink-soft);
+  padding: 5px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.tutor-tab:hover {
+  background: var(--pku-red-light);
+  color: var(--pku-red);
+}
+.tutor-tab.active {
+  background: var(--pku-red);
+  color: #fff;
+  font-weight: 600;
 }
 .tutor-empty {
   flex: 1;

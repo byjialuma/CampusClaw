@@ -26,6 +26,8 @@ const (
 	defaultSystemPrompt = "你是本班解题助教，结合班级材料引导学生自主解题，用中文，简洁准确。"
 	tutorSkillName      = "解题引导"
 	tutorSkillDesc      = "开启时给出解题思路与步骤引导，引用本班材料的标题与位置，不直接给出最终答案。"
+	// tutorSkillContent 是内置「解题引导」的指令内容（编排时并入 system）；教师可改写但不可删除该技能。
+	tutorSkillContent = "学生正在解题，请给出解题思路与步骤引导，引用材料中的相关内容（含材料标题与位置），不要直接给出该题的最终答案。"
 )
 
 // seedMaterial 描述一个预置讲义文件与所属班级。
@@ -191,15 +193,34 @@ func ensureAssistant(ctx context.Context, db *sql.DB, classID int64, className s
 	return id, err
 }
 
+// ensureSkill 保证内置「解题引导」存在且带完整标记；存量行仅补齐缺失字段，
+// 不覆盖教师已改写的 enabled/content（教师可停用、可改内容，但不可删除）。
 func ensureSkill(ctx context.Context, db *sql.DB, assistantID int64) error {
 	var id int64
+	var content sql.NullString
+	var source string
+	var builtin bool
 	err := db.QueryRowContext(ctx,
-		`SELECT id FROM skills WHERE assistant_id = ? AND name = ?`,
-		assistantID, tutorSkillName).Scan(&id)
+		`SELECT id, content, source, builtin FROM skills WHERE assistant_id = ? AND name = ?`,
+		assistantID, tutorSkillName).Scan(&id, &content, &source, &builtin)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = db.ExecContext(ctx,
-			`INSERT INTO skills (assistant_id, name, description, enabled) VALUES (?, ?, ?, 1)`,
-			assistantID, tutorSkillName, tutorSkillDesc)
+			`INSERT INTO skills (assistant_id, name, description, enabled, content, source, builtin)
+			 VALUES (?, ?, ?, 1, ?, 'seed', 1)`,
+			assistantID, tutorSkillName, tutorSkillDesc, tutorSkillContent)
+		return err
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if !builtin || source != "seed" || !content.Valid || content.String == "" {
+		if _, err := db.ExecContext(ctx,
+			`UPDATE skills SET builtin = 1, source = 'seed',
+			        content = IF(content IS NULL OR content = '', ?, content)
+			 WHERE id = ?`,
+			tutorSkillContent, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }

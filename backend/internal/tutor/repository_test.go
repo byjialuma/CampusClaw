@@ -186,6 +186,64 @@ func TestSetSkillEnabledNotFound(t *testing.T) {
 	}
 }
 
+// ---------- 技能 CRUD ----------
+
+// 新建技能：INSERT...SELECT 把 assistant 解析落在 SQL 层，默认停用。
+func TestCreateSkillClassScoped(t *testing.T) {
+	repo, conn := newTestRepo(1)
+	sk, err := repo.CreateSkill(context.Background(), 1, "英语写作", "润色术语", SkillSourceOnline)
+	if err != nil {
+		t.Fatalf("新建技能失败: %v", err)
+	}
+	if sk.ID != 101 || sk.Name != "英语写作" || sk.Source != SkillSourceOnline || sk.Enabled {
+		t.Fatalf("新建技能字段不符: %+v", sk)
+	}
+	log := lastLog(t, conn)
+	if !strings.Contains(log.sql, "FROM assistants a WHERE a.class_id = ?") {
+		t.Fatalf("新建必须按本班助手解析，语句为: %s", log.sql)
+	}
+	if len(log.args) != 4 || log.args[3].Value != int64(1) {
+		t.Fatalf("参数必须包含 class_id，实际: %v", log.args)
+	}
+}
+
+// 本班助手不存在时不写入任何行，映射为 ErrAssistantNotFound。
+func TestCreateSkillAssistantMissing(t *testing.T) {
+	repo, _ := newTestRepo(0)
+	if _, err := repo.CreateSkill(context.Background(), 99, "n", "c", SkillSourceUpload); !errors.Is(err, ErrAssistantNotFound) {
+		t.Fatalf("期望 ErrAssistantNotFound，得到 %v", err)
+	}
+}
+
+// 删除自建技能：SQL 层同时限定本班与 builtin=0。
+func TestDeleteSkillClassScopedBuiltinGuard(t *testing.T) {
+	repo, conn := newTestRepo(1)
+	if err := repo.DeleteSkill(context.Background(), 1, 5); err != nil {
+		t.Fatalf("删除技能失败: %v", err)
+	}
+	log := lastLog(t, conn)
+	if !strings.Contains(log.sql, "a.class_id = ?") || !strings.Contains(log.sql, "s.builtin = 0") {
+		t.Fatalf("删除必须同时限定本班与非内置，语句为: %s", log.sql)
+	}
+}
+
+// 技能不存在（含他人班级）→ 404 哨兵。
+func TestDeleteSkillNotFound(t *testing.T) {
+	repo, _ := newTestRepo(0) // 删除 0 行，存在性查询返回空
+	if err := repo.DeleteSkill(context.Background(), 1, 999); !errors.Is(err, ErrSkillNotFound) {
+		t.Fatalf("期望 ErrSkillNotFound，得到 %v", err)
+	}
+}
+
+// 存在但 builtin=1 → 删除保护哨兵。
+func TestDeleteSkillBuiltinProtected(t *testing.T) {
+	exists := &fakeRows{cols: []string{"1"}, rows: [][]driver.Value{{int64(1)}}}
+	repo, _ := newTestRepo(0, exists) // 删除 0 行；存在性查询命中
+	if err := repo.DeleteSkill(context.Background(), 1, 4); !errors.Is(err, ErrSkillBuiltinProtected) {
+		t.Fatalf("期望 ErrSkillBuiltinProtected，得到 %v", err)
+	}
+}
+
 // ---------- citations JSON 往返 ----------
 
 func TestCitationsJSONRoundtrip(t *testing.T) {
@@ -212,7 +270,7 @@ func TestCitationsJSONRoundtrip(t *testing.T) {
 	repo, conn := newTestRepo(1)
 	if _, err := repo.AppendMessage(context.Background(), 7, NewMessage{
 		Role: RoleAssistant, Content: "先回顾定义……", Citations: want,
-		PromptUsed: "p", SkillEnabled: true,
+		PromptUsed: "p", SkillsUsed: []SkillRef{{ID: 7, Name: "解题引导"}},
 	}); err != nil {
 		t.Fatalf("写入消息失败: %v", err)
 	}
@@ -228,6 +286,18 @@ func TestCitationsJSONRoundtrip(t *testing.T) {
 	if len(gotBack) != 2 || gotBack[0] != want[0] || gotBack[1] != want[1] {
 		t.Fatalf("JSON 往返不等价:\n got  %+v\n want %+v", gotBack, want)
 	}
+	// skills_used 快照同样以 JSON 写入，可反序列化还原。
+	rawSkills, ok := log.args[5].Value.(string)
+	if !ok {
+		t.Fatalf("skills_used 参数必须是 JSON 字符串，实际 %T", log.args[5].Value)
+	}
+	var gotSkills []SkillRef
+	if err := json.Unmarshal([]byte(rawSkills), &gotSkills); err != nil {
+		t.Fatalf("技能快照反序列化失败: %v", err)
+	}
+	if len(gotSkills) != 1 || gotSkills[0] != (SkillRef{ID: 7, Name: "解题引导"}) {
+		t.Fatalf("技能快照往返不等价: %+v", gotSkills)
+	}
 }
 
 // user 轮与无命中的 assistant 轮：citations 必须为 SQL NULL，不写 "null"。
@@ -241,6 +311,9 @@ func TestAppendMessageNullCitations(t *testing.T) {
 	log := lastLog(t, conn)
 	if log.args[3].Value != nil {
 		t.Fatalf("user 轮 citations 必须为 NULL，实际 %v", log.args[3].Value)
+	}
+	if log.args[5].Value != nil {
+		t.Fatalf("user 轮 skills_used 必须为 NULL，实际 %v", log.args[5].Value)
 	}
 
 	repo2, conn2 := newTestRepo(1)
@@ -265,12 +338,16 @@ func TestMessagesByConversationDeserialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	skillsJSON, err := json.Marshal([]SkillRef{{ID: 7, Name: "解题引导"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	rows := &fakeRows{
-		cols: []string{"id", "conversation_id", "role", "content", "citations", "created_at"},
+		cols: []string{"id", "conversation_id", "role", "content", "citations", "skills_used", "created_at"},
 		rows: [][]driver.Value{
-			{int64(1), int64(7), RoleUser, "题目？", nil, time.Now()},
-			{int64(2), int64(7), RoleAssistant, "思路……", rawJSON, time.Now()},
-			{int64(3), int64(7), RoleAssistant, "资料中未找到。", []byte("[]"), time.Now()},
+			{int64(1), int64(7), RoleUser, "题目？", nil, nil, time.Now()},
+			{int64(2), int64(7), RoleAssistant, "思路……", rawJSON, skillsJSON, time.Now()},
+			{int64(3), int64(7), RoleAssistant, "资料中未找到。", []byte("[]"), nil, time.Now()},
 		},
 	}
 	repo, _ := newTestRepo(0, rows)
@@ -288,8 +365,14 @@ func TestMessagesByConversationDeserialization(t *testing.T) {
 	if len(msgs[1].Citations) != 1 || msgs[1].Citations[0] != cs[0] {
 		t.Fatalf("assistant 轮引用还原错误: %+v", msgs[1].Citations)
 	}
+	if len(msgs[1].SkillsUsed) != 1 || msgs[1].SkillsUsed[0].Name != "解题引导" {
+		t.Fatalf("assistant 轮技能快照还原错误: %+v", msgs[1].SkillsUsed)
+	}
 	if msgs[2].Citations == nil || len(msgs[2].Citations) != 0 {
 		t.Fatalf("空数组 JSON 应还原为空切片，得到 %v", msgs[2].Citations)
+	}
+	if msgs[2].SkillsUsed != nil {
+		t.Fatalf("无快照时应为 nil，得到 %v", msgs[2].SkillsUsed)
 	}
 }
 
@@ -301,9 +384,11 @@ func marshalCitationsForTest(cs []Citation) ([]byte, error) {
 
 func TestAssistantConfigJoin(t *testing.T) {
 	rows := &fakeRows{
-		cols: []string{"a.id", "a.name", "a.system_prompt", "s.id", "s.name", "s.description", "s.enabled"},
+		cols: []string{"a.id", "a.name", "a.system_prompt", "s.id", "s.name", "s.description",
+			"s.content", "s.source", "s.builtin", "s.enabled"},
 		rows: [][]driver.Value{
-			{int64(9), "A班·解题助手", "你是本班解题助教……", int64(4), "解题引导", "开启时……", true},
+			{int64(9), "A班·解题助手", "你是本班解题助教……", int64(4), "解题引导", "开启时……",
+				"学生正在解题……", "seed", true, true},
 		},
 	}
 	repo, conn := newTestRepo(0, rows)
@@ -315,6 +400,10 @@ func TestAssistantConfigJoin(t *testing.T) {
 	if cfg.AssistantID != 9 || cfg.SystemPrompt == "" || len(cfg.Skills) != 1 || !cfg.Skills[0].Enabled {
 		t.Fatalf("助手配置不符: %+v", cfg)
 	}
+	sk := cfg.Skills[0]
+	if sk.Content != "学生正在解题……" || sk.Source != "seed" || !sk.Builtin {
+		t.Fatalf("技能完整字段不符: %+v", sk)
+	}
 	log := lastLog(t, conn)
 	if !strings.Contains(log.sql, "a.class_id = ?") {
 		t.Fatalf("助手配置必须按班级读取，语句为: %s", log.sql)
@@ -324,8 +413,9 @@ func TestAssistantConfigJoin(t *testing.T) {
 // LEFT JOIN 无技能行时配置仍可用（技能列表为空）。
 func TestAssistantConfigWithoutSkills(t *testing.T) {
 	rows := &fakeRows{
-		cols: []string{"a.id", "a.name", "a.system_prompt", "s.id", "s.name", "s.description", "s.enabled"},
-		rows: [][]driver.Value{{int64(9), "A班·解题助手", nil, nil, nil, nil, nil}},
+		cols: []string{"a.id", "a.name", "a.system_prompt", "s.id", "s.name", "s.description",
+			"s.content", "s.source", "s.builtin", "s.enabled"},
+		rows: [][]driver.Value{{int64(9), "A班·解题助手", nil, nil, nil, nil, nil, nil, nil, nil}},
 	}
 	repo, _ := newTestRepo(0, rows)
 

@@ -7,6 +7,8 @@ import type {
   TutorConversation,
   TutorMessage,
   TutorStreamEvent,
+  TutorSkill,
+  TutorSkillRef,
   AssistantConfigData,
 } from './types'
 
@@ -327,11 +329,11 @@ function dispatchSSEEvent(rawEvent: string, onEvent: (e: TutorStreamEvent) => vo
 
   switch (event) {
     case 'meta': {
-      const d = data as { citations?: Citation[]; skillEnabled?: boolean }
+      const d = data as { citations?: Citation[]; skills?: TutorSkillRef[] }
       onEvent({
         type: 'meta',
         citations: Array.isArray(d.citations) ? d.citations : [],
-        skillEnabled: d.skillEnabled === true,
+        skills: Array.isArray(d.skills) ? d.skills : [],
       })
       break
     }
@@ -381,7 +383,7 @@ export async function saveAssistantPrompt(systemPrompt: string): Promise<void> {
   }
 }
 
-// 启用/停用解题引导技能。
+// 启用/停用技能。
 export async function setSkillEnabled(skillId: number, enabled: boolean): Promise<void> {
   const { status, data } = await request<{ ok: boolean } | { error: string }>(
     `/api/tutor/assistant/skills/${skillId}`,
@@ -394,5 +396,52 @@ export async function setSkillEnabled(skillId: number, enabled: boolean): Promis
   if (status === 401) handle401()
   if (status !== 200) {
     throw new ApiError(status, (data as { error: string }).error ?? '更新技能失败')
+  }
+}
+
+// 在线新建技能文档（名称 1–120 字，内容非空 ≤20000 字；默认停用）。
+export async function createSkill(name: string, content: string): Promise<TutorSkill> {
+  const { status, data } = await request<TutorSkill | { error: string }>(
+    '/api/tutor/assistant/skills',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, content }),
+    },
+  )
+  if (status === 401) handle401()
+  if (status !== 201) {
+    throw new ApiError(status, (data as { error: string }).error ?? '新建技能失败')
+  }
+  return data as TutorSkill
+}
+
+// 上传技能文档（.md/.txt ≤64KB UTF-8；名称缺省取文件名去扩展名；默认停用）。
+export async function uploadSkill(file: File, name?: string): Promise<TutorSkill> {
+  const form = new FormData()
+  form.append('file', file)
+  if (name && name.trim()) {
+    form.append('name', name.trim())
+  }
+  const { status, data } = await request<TutorSkill | { error: string }>(
+    '/api/tutor/assistant/skills/upload',
+    { method: 'POST', body: form },
+  )
+  if (status === 401) handle401()
+  if (status !== 201) {
+    throw new ApiError(status, (data as { error: string }).error ?? '上传技能失败')
+  }
+  return data as TutorSkill
+}
+
+// 删除技能（内置技能服务端返回 409，前端在调用前已禁用）。
+export async function deleteSkill(skillId: number): Promise<void> {
+  const { status, data } = await request<{ ok: boolean } | { error: string }>(
+    `/api/tutor/assistant/skills/${skillId}`,
+    { method: 'DELETE' },
+  )
+  if (status === 401) handle401()
+  if (status !== 200) {
+    throw new ApiError(status, (data as { error: string }).error ?? '删除技能失败')
   }
 }

@@ -25,7 +25,7 @@ const (
 	guidingSkillName = "解题引导"
 	// fallbackSystemPrompt 提示词列为空时的内置兜底（与 seed.defaultSystemPrompt 一致）。
 	fallbackSystemPrompt = "你是本班解题助教，结合班级材料引导学生自主解题，用中文，简洁准确。"
-	// skillInstruction 技能开启时附加到 system 的引导指令：给思路、引材料、不给最终答案。
+	// skillInstruction 内置「解题引导」的默认指令内容；存量行 content 为空时以此为兜底（与 seed.tutorSkillContent 一致）。
 	skillInstruction = "学生正在解题，请给出解题思路与步骤引导，引用材料中的相关内容（含材料标题与位置），不要直接给出该题的最终答案。"
 	// noHitNote 无命中时注入 system 的防编造注记。
 	noHitNote = "知识库中未找到与本题相关的内容，回答时必须明确说明\"资料中未找到\"，不得引用或编造任何材料出处。"
@@ -41,7 +41,7 @@ const persistTimeout = 10 * time.Second
 type Event struct {
 	Type         string
 	Citations    []Citation
-	SkillEnabled bool
+	Skills       []SkillRef
 	Text         string
 	MessageID    int64
 	ErrorMessage string
@@ -58,10 +58,10 @@ type AskInput struct {
 
 // AskOutput 是流式提问正常结束后的完整结果。
 type AskOutput struct {
-	Answer       string
-	Citations    []Citation
-	SkillEnabled bool
-	MessageID    int64
+	Answer    string
+	Citations []Citation
+	Skills    []SkillRef
+	MessageID int64
 }
 
 // Repo 是编排服务所需的持久化能力（*TutorRepository 满足）。
@@ -117,7 +117,7 @@ func (s *Service) AskStream(ctx context.Context, in AskInput) (*AskOutput, error
 	if prompt == "" {
 		prompt = fallbackSystemPrompt
 	}
-	skillEnabled := cfg.guidingEnabled()
+	enabledSkills := cfg.EnabledSkills()
 
 	// 4. 读取历史（必须在写入本轮 user 消息之前），按时间升序。
 	history, err := s.Repo.MessagesByConversation(ctx, in.ConversationID)
@@ -139,8 +139,8 @@ func (s *Service) AskStream(ctx context.Context, in AskInput) (*AskOutput, error
 
 	citations := mapCitations(hits)
 
-	// 7. 组装 system（提示词 + 技能指令 + 材料上下文/无命中注记）与完整消息序列。
-	systemContent := buildSystem(prompt, skillEnabled, hits)
+	// 7. 组装 system（提示词 + 各已启用技能内容 + 材料上下文/无命中注记）与完整消息序列。
+	systemContent := buildSystem(prompt, enabledSkills, hits)
 	messages := make([]llm.Message, 0, len(history)+2)
 	messages = append(messages, llm.Message{Role: "system", Content: systemContent})
 	for _, h := range history {
@@ -148,8 +148,10 @@ func (s *Service) AskStream(ctx context.Context, in AskInput) (*AskOutput, error
 	}
 	messages = append(messages, llm.Message{Role: RoleUser, Content: in.Question})
 
-	// 8. meta 先于回答文本推送（引用卡片可先行渲染）。
-	emit(Event{Type: EventMeta, Citations: citations, SkillEnabled: skillEnabled})
+	skillRefs := skillRefsOf(enabledSkills)
+
+	// 8. meta 先于回答文本推送（引用与本次启用技能先行渲染）。
+	emit(Event{Type: EventMeta, Citations: citations, Skills: skillRefs})
 
 	// 9. 流式生成，delta 透传。
 	answer, streamErr := s.LLM.StreamAsk(ctx, messages, func(delta string) error {
@@ -158,16 +160,16 @@ func (s *Service) AskStream(ctx context.Context, in AskInput) (*AskOutput, error
 	})
 
 	if streamErr != nil {
-		return s.finishWithError(ctx, in, emit, answer, citations, prompt, skillEnabled, streamErr)
+		return s.finishWithError(ctx, in, emit, answer, citations, prompt, skillRefs, streamErr)
 	}
 
-	// 10. 持久化完整回答 + 引用 + 提示词快照 + 技能状态。
+	// 10. 持久化完整回答 + 引用 + 提示词快照 + 启用技能快照。
 	messageID, err := s.Repo.AppendMessage(ctx, in.ConversationID, NewMessage{
-		Role:         RoleAssistant,
-		Content:      answer,
-		Citations:    citations,
-		PromptUsed:   prompt,
-		SkillEnabled: skillEnabled,
+		Role:       RoleAssistant,
+		Content:    answer,
+		Citations:  citations,
+		PromptUsed: prompt,
+		SkillsUsed: skillRefs,
 	})
 	if err != nil {
 		emit(Event{Type: EventError, ErrorMessage: friendlyErrorText})
@@ -176,21 +178,21 @@ func (s *Service) AskStream(ctx context.Context, in AskInput) (*AskOutput, error
 
 	emit(Event{Type: EventDone, MessageID: messageID})
 	return &AskOutput{
-		Answer:       answer,
-		Citations:    citations,
-		SkillEnabled: skillEnabled,
-		MessageID:    messageID,
+		Answer:    answer,
+		Citations: citations,
+		Skills:    skillRefs,
+		MessageID: messageID,
 	}, nil
 }
 
 // finishWithError 处理流式生成失败/中断：
 // 已积累文本非空则持久化（引用与快照一并落库）；客户端中断不推送 error 事件。
 func (s *Service) finishWithError(reqCtx context.Context, in AskInput, emit func(Event),
-	answer string, citations []Citation, prompt string, skillEnabled bool, streamErr error) (*AskOutput, error) {
+	answer string, citations []Citation, prompt string, skillRefs []SkillRef, streamErr error) (*AskOutput, error) {
 	// 客户端中断：请求 context 已取消。使用独立 context 兜底持久化，随后静默返回。
 	if reqCtx.Err() != nil {
 		if strings.TrimSpace(answer) != "" {
-			_ = s.persistPartial(in.ConversationID, answer, citations, prompt, skillEnabled)
+			_ = s.persistPartial(in.ConversationID, answer, citations, prompt, skillRefs)
 		}
 		return nil, streamErr
 	}
@@ -199,11 +201,11 @@ func (s *Service) finishWithError(reqCtx context.Context, in AskInput, emit func
 	// 但不发送 done（避免前端误判成功），随后推送友好错误事件。
 	if strings.TrimSpace(answer) != "" {
 		_, _ = s.Repo.AppendMessage(reqCtx, in.ConversationID, NewMessage{
-			Role:         RoleAssistant,
-			Content:      answer,
-			Citations:    citations,
-			PromptUsed:   prompt,
-			SkillEnabled: skillEnabled,
+			Role:       RoleAssistant,
+			Content:    answer,
+			Citations:  citations,
+			PromptUsed: prompt,
+			SkillsUsed: skillRefs,
 		})
 	}
 	emit(Event{Type: EventError, ErrorMessage: friendlyErrorText})
@@ -212,15 +214,15 @@ func (s *Service) finishWithError(reqCtx context.Context, in AskInput, emit func
 
 // persistPartial 以独立 context 持久化中断时已积累的回答（不随请求取消而失败）。
 func (s *Service) persistPartial(convID int64, answer string, citations []Citation,
-	prompt string, skillEnabled bool) error {
+	prompt string, skillRefs []SkillRef) error {
 	ctx, cancel := context.WithTimeout(context.Background(), persistTimeout)
 	defer cancel()
 	_, err := s.Repo.AppendMessage(ctx, convID, NewMessage{
-		Role:         RoleAssistant,
-		Content:      answer,
-		Citations:    citations,
-		PromptUsed:   prompt,
-		SkillEnabled: skillEnabled,
+		Role:       RoleAssistant,
+		Content:    answer,
+		Citations:  citations,
+		PromptUsed: prompt,
+		SkillsUsed: skillRefs,
 	})
 	return err
 }
@@ -264,11 +266,18 @@ func mapCitations(hits []vector.Hit) []Citation {
 	return citations
 }
 
-// buildSystem 组装 system 消息：提示词 → 技能指令（开启时）→ 材料上下文或无命中注记。
-func buildSystem(prompt string, skillEnabled bool, hits []vector.Hit) string {
+// buildSystem 组装 system 消息：提示词 → 各已启用技能内容（逐条）→ 材料上下文或无命中注记。
+// 技能内容为空时跳过；内置「解题引导」content 缺失（存量库未播种）时用默认指令兜底。
+func buildSystem(prompt string, skills []Skill, hits []vector.Hit) string {
 	parts := []string{prompt}
-	if skillEnabled {
-		parts = append(parts, skillInstruction)
+	for _, sk := range skills {
+		content := strings.TrimSpace(sk.Content)
+		if content == "" && sk.Name == guidingSkillName {
+			content = skillInstruction
+		}
+		if content != "" {
+			parts = append(parts, content)
+		}
 	}
 	if len(hits) == 0 {
 		parts = append(parts, noHitNote)
@@ -302,15 +311,22 @@ func formatLocator(l model.Locator) string {
 	}
 }
 
-// guidingEnabled 读取内置「解题引导」技能状态；找不到同名技能时回退到首个技能。
-func (c *AssistantConfig) guidingEnabled() bool {
+// EnabledSkills 返回全部已启用技能（AssistantConfig 查询已按 id 升序，拼装顺序稳定）。
+func (c *AssistantConfig) EnabledSkills() []Skill {
+	out := make([]Skill, 0, len(c.Skills))
 	for _, sk := range c.Skills {
-		if sk.Name == guidingSkillName {
-			return sk.Enabled
+		if sk.Enabled {
+			out = append(out, sk)
 		}
 	}
-	if len(c.Skills) > 0 {
-		return c.Skills[0].Enabled
+	return out
+}
+
+// skillRefsOf 提取启用技能的快照引用（id+name）。
+func skillRefsOf(skills []Skill) []SkillRef {
+	out := make([]SkillRef, 0, len(skills))
+	for _, sk := range skills {
+		out = append(out, SkillRef{ID: sk.ID, Name: sk.Name})
 	}
-	return false
+	return out
 }

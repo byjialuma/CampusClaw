@@ -128,7 +128,7 @@ func baseConfig() *AssistantConfig {
 		AssistantID:  5,
 		Name:         "解题助手",
 		SystemPrompt: "你是一位严格的数学助教。",
-		Skills:       []Skill{{ID: 7, Name: "解题引导", Enabled: true}},
+		Skills:       []Skill{{ID: 7, Name: "解题引导", Content: skillInstruction, Source: "seed", Builtin: true, Enabled: true}},
 	}
 }
 
@@ -186,9 +186,10 @@ func TestAskStreamFullOrchestration(t *testing.T) {
 		t.Fatalf("事件顺序错误: %v", gotTypes)
 	}
 
-	// meta：引用完整映射（snippet/locator/score）+ 技能状态。
+	// meta：引用完整映射（snippet/locator/score）+ 启用技能快照。
 	meta := events[0]
-	if !meta.SkillEnabled || len(meta.Citations) != 1 {
+	if len(meta.Skills) != 1 || meta.Skills[0].ID != 7 || meta.Skills[0].Name != "解题引导" ||
+		len(meta.Citations) != 1 {
 		t.Fatalf("meta 错误: %+v", meta)
 	}
 	c := meta.Citations[0]
@@ -236,7 +237,8 @@ func TestAskStreamFullOrchestration(t *testing.T) {
 	}
 	a := repo.appended[1].m
 	if a.Role != RoleAssistant || a.Content != "思路一思路二" ||
-		len(a.Citations) != 1 || a.PromptUsed != "你是一位严格的数学助教。" || !a.SkillEnabled {
+		len(a.Citations) != 1 || a.PromptUsed != "你是一位严格的数学助教。" ||
+		len(a.SkillsUsed) != 1 || a.SkillsUsed[0].Name != "解题引导" {
 		t.Fatalf("assistant 消息错误: %+v", a)
 	}
 
@@ -261,9 +263,9 @@ func TestAskStreamSkillDisabledDifference(t *testing.T) {
 	}
 	events := *eventsPtr
 
-	// meta 中技能状态为 false。
-	if events[0].SkillEnabled {
-		t.Fatal("技能应标记为停用")
+	// meta 中启用技能列表为空。
+	if len(events[0].Skills) != 0 {
+		t.Fatalf("技能全部停用，meta 技能列表应为空: %+v", events[0].Skills)
 	}
 	// system 不含引导指令/不给最终答案约束。
 	sys := stream.gotMessages[0].Content
@@ -271,9 +273,9 @@ func TestAskStreamSkillDisabledDifference(t *testing.T) {
 		strings.Contains(sys, "解题思路与步骤引导") {
 		t.Fatalf("停用时不应附加技能指令: %q", sys)
 	}
-	// 持久化快照为 false。
-	if repo.appended[1].m.SkillEnabled {
-		t.Fatal("持久化技能状态应为 false")
+	// 持久化技能快照为空。
+	if len(repo.appended[1].m.SkillsUsed) != 0 {
+		t.Fatal("持久化技能快照应为空")
 	}
 }
 
@@ -290,6 +292,58 @@ func TestAskStreamSkillEnabledHasInstruction(t *testing.T) {
 	if !strings.Contains(sys, "解题思路与步骤引导") ||
 		!strings.Contains(sys, "不要直接给出该题的最终答案") {
 		t.Fatalf("开启时必须附加技能指令: %q", sys)
+	}
+}
+
+// 多条技能同时启用：全部内容按 id 升序逐条并入 system，快照包含全部启用技能；
+// 停用的技能不参与拼装。
+func TestAskStreamMultipleEnabledSkills(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Skills = append(cfg.Skills,
+		Skill{ID: 8, Name: "英语写作", Content: "用英文润色关键术语表达。", Source: "online", Enabled: true},
+		Skill{ID: 9, Name: "停用技能", Content: "不应出现的内容XYZ", Source: "upload", Enabled: false},
+	)
+	repo := &fakeRepo{conv: &Conversation{ID: 1}, cfg: cfg}
+	stream := &fakeStreamLLM{deltas: []string{"答"}}
+	svc, _ := newHarness(repo, sampleHits(), stream)
+
+	eventsPtr, onEvent := collectEvents()
+	if _, err := svc.AskStream(context.Background(), defaultAskInput("题目", onEvent)); err != nil {
+		t.Fatalf("AskStream 失败: %v", err)
+	}
+
+	sys := stream.gotMessages[0].Content
+	guideIdx := strings.Index(sys, skillInstruction)
+	writeIdx := strings.Index(sys, "用英文润色关键术语表达。")
+	if guideIdx < 0 || writeIdx < 0 || guideIdx > writeIdx {
+		t.Fatalf("多技能应按 id 升序逐条并入 system: %q", sys)
+	}
+	if strings.Contains(sys, "不应出现的内容XYZ") {
+		t.Fatalf("停用技能不得参与拼装: %q", sys)
+	}
+	meta := (*eventsPtr)[0]
+	if len(meta.Skills) != 2 || meta.Skills[0].Name != "解题引导" || meta.Skills[1].Name != "英语写作" {
+		t.Fatalf("meta 技能快照错误: %+v", meta.Skills)
+	}
+	if got := repo.appended[1].m.SkillsUsed; len(got) != 2 || got[1].ID != 8 {
+		t.Fatalf("持久化技能快照错误: %+v", got)
+	}
+}
+
+// 内置「解题引导」content 为空（存量库未播种内容）时用默认指令兜底。
+func TestAskStreamGuidingSkillEmptyContentFallback(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Skills[0].Content = ""
+	repo := &fakeRepo{conv: &Conversation{ID: 1}, cfg: cfg}
+	stream := &fakeStreamLLM{deltas: []string{"答"}}
+	svc, _ := newHarness(repo, sampleHits(), stream)
+
+	_, onEvent := collectEvents()
+	if _, err := svc.AskStream(context.Background(), defaultAskInput("题目", onEvent)); err != nil {
+		t.Fatalf("AskStream 失败: %v", err)
+	}
+	if sys := stream.gotMessages[0].Content; !strings.Contains(sys, skillInstruction) {
+		t.Fatalf("内置技能内容为空时必须用默认指令兜底: %q", sys)
 	}
 }
 
@@ -424,7 +478,7 @@ func TestAskStreamClientInterruptPersistsPartial(t *testing.T) {
 	}
 	a := repo.appended[1].m
 	if a.Role != RoleAssistant || a.Content != "已写部分" ||
-		len(a.Citations) != 1 || a.PromptUsed == "" || !a.SkillEnabled {
+		len(a.Citations) != 1 || a.PromptUsed == "" || len(a.SkillsUsed) != 1 {
 		t.Fatalf("中断部分持久化错误: %+v", a)
 	}
 }

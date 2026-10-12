@@ -750,7 +750,10 @@ func TestQASuccess(t *testing.T) {
 	}}
 
 	body, _ := json.Marshal(map[string]string{"question": "什么是集合？"})
-	resp, _ := client.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("问答请求失败: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("问答期望 200，得到 %d", resp.StatusCode)
@@ -793,7 +796,10 @@ func TestQACrossClass(t *testing.T) {
 	}}
 
 	body, _ := json.Marshal(map[string]string{"question": "什么是集合？"})
-	resp, _ := client.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("问答请求失败: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("问答期望 200，得到 %d", resp.StatusCode)
@@ -817,7 +823,10 @@ func TestQALLMUnavailable(t *testing.T) {
 	api.QASvc = &fakeQA{err: errors.New("LLM 服务不可用")}
 
 	body, _ := json.Marshal(map[string]string{"question": "什么是集合？"})
-	resp, _ := client.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(srv.URL+"/api/qa", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("问答请求失败: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("LLM 失败期望 503，得到 %d", resp.StatusCode)

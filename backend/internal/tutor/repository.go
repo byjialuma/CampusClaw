@@ -13,11 +13,19 @@ import (
 	"campusclaw/internal/model"
 )
 
-// 错误哨兵：服务层与路由层据此映射 404/400。
+// 错误哨兵：服务层与路由层据此映射 404/400/409。
 var (
-	ErrAssistantNotFound    = errors.New("本班助手不存在")
-	ErrSkillNotFound        = errors.New("技能不存在")
-	ErrConversationNotFound = errors.New("会话不存在")
+	ErrAssistantNotFound     = errors.New("本班助手不存在")
+	ErrSkillNotFound         = errors.New("技能不存在")
+	ErrSkillBuiltinProtected = errors.New("内置技能不可删除")
+	ErrConversationNotFound  = errors.New("会话不存在")
+)
+
+// 技能来源取值（与 skills.source 约定一致）。
+const (
+	SkillSourceSeed   = "seed"   // 内置播种（如解题引导，builtin=1）
+	SkillSourceUpload = "upload" // 教师上传 md/txt 文件创建
+	SkillSourceOnline = "online" // 教师在线新建
 )
 
 // 角色取值（与 messages.role ENUM 一致）。
@@ -26,12 +34,21 @@ const (
 	RoleAssistant = "assistant"
 )
 
-// Skill 是助手的一个技能（本课仅内置「解题引导」）。
+// Skill 是助手的一条技能（指令文档：名称 + 内容）；builtin=1 的内置技能不可删除。
 type Skill struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Content     string `json:"content"`
+	Source      string `json:"source"`
+	Builtin     bool   `json:"builtin"`
 	Enabled     bool   `json:"enabled"`
+}
+
+// SkillRef 是某轮回答启用技能的快照（仅存 id+name，删除技能后历史仍可展示）。
+type SkillRef struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
 }
 
 // AssistantConfig 是本班助手的配置：提示词与技能列表。
@@ -68,16 +85,17 @@ type Message struct {
 	Role           string     `json:"role"`
 	Content        string     `json:"content"`
 	Citations      []Citation `json:"citations,omitempty"`
+	SkillsUsed     []SkillRef `json:"skillsUsed,omitempty"`
 	CreatedAt      time.Time  `json:"createdAt"`
 }
 
 // NewMessage 是待写入的消息（assistant 轮需附快照字段）。
 type NewMessage struct {
-	Role         string
-	Content      string
-	Citations    []Citation
-	PromptUsed   string
-	SkillEnabled bool
+	Role       string
+	Content    string
+	Citations  []Citation
+	PromptUsed string
+	SkillsUsed []SkillRef
 }
 
 // TutorRepository 助手配置、会话与消息的 MySQL 访问。
@@ -94,14 +112,17 @@ type assistantConfigRow struct {
 	SkillID      sql.NullInt64
 	SkillName    sql.NullString
 	SkillDesc    sql.NullString
+	SkillContent sql.NullString
+	SkillSource  sql.NullString
+	SkillBuiltin sql.NullBool
 	SkillEnabled sql.NullBool
 }
 
-// AssistantConfig 读取本班助手提示词与技能列表；班级只信参数（来自 JWT claims）。
+// AssistantConfig 读取本班助手提示词与全部技能（含内容/来源/内置标记）；班级只信参数（来自 JWT claims）。
 func (r *TutorRepository) AssistantConfig(ctx context.Context, classID int64) (*AssistantConfig, error) {
 	rows, err := r.DB.QueryContext(ctx,
 		`SELECT a.id, a.name, a.system_prompt,
-		        s.id, s.name, s.description, s.enabled
+		        s.id, s.name, s.description, s.content, s.source, s.builtin, s.enabled
 		 FROM assistants a
 		 LEFT JOIN skills s ON s.assistant_id = a.id
 		 WHERE a.class_id = ?
@@ -116,7 +137,8 @@ func (r *TutorRepository) AssistantConfig(ctx context.Context, classID int64) (*
 	for rows.Next() {
 		var row assistantConfigRow
 		if err := rows.Scan(&row.AssistantID, &row.Name, &row.SystemPrompt,
-			&row.SkillID, &row.SkillName, &row.SkillDesc, &row.SkillEnabled); err != nil {
+			&row.SkillID, &row.SkillName, &row.SkillDesc, &row.SkillContent,
+			&row.SkillSource, &row.SkillBuiltin, &row.SkillEnabled); err != nil {
 			return nil, err
 		}
 		if cfg == nil {
@@ -131,6 +153,9 @@ func (r *TutorRepository) AssistantConfig(ctx context.Context, classID int64) (*
 				ID:          row.SkillID.Int64,
 				Name:        row.SkillName.String,
 				Description: row.SkillDesc.String,
+				Content:     row.SkillContent.String,
+				Source:      row.SkillSource.String,
+				Builtin:     row.SkillBuiltin.Bool,
 				Enabled:     row.SkillEnabled.Bool,
 			})
 		}
@@ -193,6 +218,54 @@ func (r *TutorRepository) SetSkillEnabled(ctx context.Context, classID, skillID 
 	return nil
 }
 
+// CreateSkill 在本班助手下新建技能（来源 upload/online），默认停用，由教师显式启用。
+func (r *TutorRepository) CreateSkill(ctx context.Context, classID int64, name, content, source string) (*Skill, error) {
+	res, err := r.DB.ExecContext(ctx,
+		`INSERT INTO skills (assistant_id, name, content, source, enabled)
+		 SELECT a.id, ?, ?, ?, 0 FROM assistants a WHERE a.class_id = ?`,
+		name, content, source, classID)
+	if err != nil {
+		return nil, err
+	}
+	// 本班助手不存在时 INSERT...SELECT 不写入任何行。
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return nil, ErrAssistantNotFound
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	return &Skill{ID: id, Name: name, Content: content, Source: source}, nil
+}
+
+// DeleteSkill 删除本班助手的自建技能；内置技能（builtin=1）拒绝删除，他人班级技能按不存在处理。
+func (r *TutorRepository) DeleteSkill(ctx context.Context, classID, skillID int64) error {
+	res, err := r.DB.ExecContext(ctx,
+		`DELETE s FROM skills s
+		 JOIN assistants a ON a.id = s.assistant_id
+		 WHERE s.id = ? AND a.class_id = ? AND s.builtin = 0`,
+		skillID, classID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return nil
+	}
+	// 未删除任何行：区分技能不存在（404）与内置技能删除保护（409）。
+	var one int
+	qerr := r.DB.QueryRowContext(ctx,
+		`SELECT 1 FROM skills s
+		 JOIN assistants a ON a.id = s.assistant_id
+		 WHERE s.id = ? AND a.class_id = ?`, skillID, classID).Scan(&one)
+	if errors.Is(qerr, sql.ErrNoRows) {
+		return ErrSkillNotFound
+	}
+	if qerr != nil {
+		return qerr
+	}
+	return ErrSkillBuiltinProtected
+}
+
 // CreateConversation 创建会话；class_id 与 user_id 均来自 JWT claims，不接受客户端传入。
 func (r *TutorRepository) CreateConversation(ctx context.Context, classID, userID int64, title string) (int64, error) {
 	res, err := r.DB.ExecContext(ctx,
@@ -247,9 +320,10 @@ func (r *TutorRepository) ConversationForUser(ctx context.Context, convID, userI
 	return &c, nil
 }
 
-// AppendMessage 写入一轮消息；assistant 轮同时持久化引用、提示词快照与技能状态。
+// AppendMessage 写入一轮消息；assistant 轮同时持久化引用、提示词快照与启用技能快照。
+// 旧 skill_enabled 列不再写入（保留在库中仅为历史兼容）。
 func (r *TutorRepository) AppendMessage(ctx context.Context, convID int64, m NewMessage) (int64, error) {
-	var citations any // user 轮保持 NULL
+	var citations, skillsUsed any // user 轮保持 NULL
 	if m.Role == RoleAssistant && m.Citations != nil {
 		raw, err := json.Marshal(m.Citations)
 		if err != nil {
@@ -257,20 +331,27 @@ func (r *TutorRepository) AppendMessage(ctx context.Context, convID int64, m New
 		}
 		citations = string(raw)
 	}
+	if m.Role == RoleAssistant && m.SkillsUsed != nil {
+		raw, err := json.Marshal(m.SkillsUsed)
+		if err != nil {
+			return 0, fmt.Errorf("序列化技能快照失败: %w", err)
+		}
+		skillsUsed = string(raw)
+	}
 	res, err := r.DB.ExecContext(ctx,
-		`INSERT INTO messages (conversation_id, role, content, citations, prompt_used, skill_enabled)
+		`INSERT INTO messages (conversation_id, role, content, citations, prompt_used, skills_used)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		convID, m.Role, m.Content, citations, m.PromptUsed, m.SkillEnabled)
+		convID, m.Role, m.Content, citations, m.PromptUsed, skillsUsed)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-// MessagesByConversation 按时间升序读取会话全部消息（仅消息本身，不含提示词快照）。
+// MessagesByConversation 按时间升序读取会话全部消息（含引用与启用技能快照，不含提示词快照）。
 func (r *TutorRepository) MessagesByConversation(ctx context.Context, convID int64) ([]Message, error) {
 	rows, err := r.DB.QueryContext(ctx,
-		`SELECT id, conversation_id, role, content, citations, created_at
+		`SELECT id, conversation_id, role, content, citations, skills_used, created_at
 		 FROM messages
 		 WHERE conversation_id = ?
 		 ORDER BY id`,
@@ -283,8 +364,9 @@ func (r *TutorRepository) MessagesByConversation(ctx context.Context, convID int
 	out := []Message{}
 	for rows.Next() {
 		var m Message
-		var rawCitations []byte
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &rawCitations, &m.CreatedAt); err != nil {
+		var rawCitations, rawSkills []byte
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content,
+			&rawCitations, &rawSkills, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		if len(rawCitations) > 0 {
@@ -293,6 +375,13 @@ func (r *TutorRepository) MessagesByConversation(ctx context.Context, convID int
 				return nil, err
 			}
 			m.Citations = cs
+		}
+		if len(rawSkills) > 0 {
+			var sks []SkillRef
+			if err := json.Unmarshal(rawSkills, &sks); err != nil {
+				return nil, fmt.Errorf("解析技能快照 JSON 失败: %w", err)
+			}
+			m.SkillsUsed = sks
 		}
 		out = append(out, m)
 	}

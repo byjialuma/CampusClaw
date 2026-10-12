@@ -43,3 +43,11 @@
 
 - [x] 8.1 全局搜索 TODO/FIXME 残留并清理；确认无调试日志遗留
 - [x] 8.2 勾选本任务清单全部条目，整理验收证据（单测计数、E2E 输出、浏览器走查结论）
+
+## 9. 技能管理扩展（多技能 CRUD）
+
+- [x] 9.1 数据库幂等扩展：`skills` 增加 `content`/`source`/`builtin` 列（`01_schema.sql` 与 EnsureSchema 同步），`messages` 增加 `skills_used` JSON（旧 `skill_enabled` 列保留不再读写）；种子为内置「解题引导」写入 content/source=seed/builtin=1；仓储层补技能 CRUD 与 builtin 删除保护；测试覆盖幂等与 JSON 往返
+- [x] 9.2 编排扩展：`internal/tutor` 加载本班全部 enabled 技能按 id 升序逐条拼装 content 入 system；`AskOutput.Skills`/meta 事件改 skills 列表；assistant 消息持久化 `skills_used` 快照；单测断言多技能拼装、零启用、删除后不再加载
+- [x] 9.3 技能管理路由：`POST /api/tutor/assistant/skills`（在线新建）、`POST /api/tutor/assistant/skills/upload`（multipart .md/.txt ≤64KB）、`DELETE /api/tutor/assistant/skills/{id}`（builtin 409）、`GET assistant` 返回完整技能字段；入参校验（名称 1–120、内容非空 ≤20000）与学生 403 全覆盖；server 单测全过
+- [x] 9.4 前端技能管理：`types.ts`/`api.ts` 扩展技能 CRUD 与 meta.skills 类型；`AssistantSettings` 增加技能列表（来源徽标/开关/删除，内置禁删）、上传控件（.md/.txt）、在线新建表单（名称+内容）；`npm run build` 与 tsc 通过
+- [x] 9.5 E2E 增补与校验：`e2e-tutor-matrix.sh` 增加技能上传/新建/删除/开关全链路、内置删除 409、学生 403 全接口、meta.skills 快照断言；浏览器走查教师技能管理全流程；`openspec validate add-tutor-agent --strict` 退出码 0

@@ -72,6 +72,7 @@ export default function TutorView({
   onOpenCitation,
 }: Props) {
   const [draft, setDraft] = useState('')
+  const [tab, setTab] = useState<'chat' | 'settings'>('chat')
 
   function onSubmit(e: FormEvent) {
     e.preventDefault()
@@ -85,71 +86,98 @@ export default function TutorView({
   const showLiveTurn =
     streaming || streamCitations.length > 0 || streamAnswer.length > 0 || streamError.length > 0
 
+  const isTeacher = me.role === 'teacher'
+  const showSettings = isTeacher && tab === 'settings'
+
   return (
     <section className="card preview-card tutor-view">
       <div className="search-results-head tutor-head">
         <h2 className="card-title">
           解题助手{conversation ? ` · ${conversation.title}` : ''}
         </h2>
-        <button type="button" className="btn btn-small" onClick={onExit}>
-          返回材料页
-        </button>
+        <div className="tutor-head-actions">
+          {isTeacher && (
+            <div className="tutor-tabs">
+              <button
+                type="button"
+                className={`tutor-tab${tab === 'chat' ? ' active' : ''}`}
+                onClick={() => setTab('chat')}
+              >
+                对话
+              </button>
+              <button
+                type="button"
+                className={`tutor-tab${tab === 'settings' ? ' active' : ''}`}
+                onClick={() => setTab('settings')}
+              >
+                设置
+              </button>
+            </div>
+          )}
+          <button type="button" className="btn btn-small" onClick={onExit}>
+            返回材料页
+          </button>
+        </div>
       </div>
 
-      {me.role === 'teacher' && <AssistantSettings />}
-
-      {!conversation ? (
-        <div className="tutor-empty">
-          <p className="muted">请先在左侧点击「新会话」，然后输入你的题目。</p>
-        </div>
+      {showSettings ? (
+        <AssistantSettings />
       ) : (
         <>
-          <div className="tutor-messages">
-            {messages.length === 0 && !showLiveTurn && (
-              <p className="muted tutor-empty-hint">会话已就绪，在下方输入你的第一个问题。</p>
-            )}
+          {!conversation ? (
+            <div className="tutor-empty">
+              <p className="muted">请先在左侧点击「新会话」，然后输入你的题目。</p>
+            </div>
+          ) : (
+            <>
+              <div className="tutor-messages">
+                {messages.length === 0 && !showLiveTurn && (
+                  <p className="muted tutor-empty-hint">会话已就绪，在下方输入你的第一个问题。</p>
+                )}
 
-            {messages.map((m) => (
-              <div key={m.id} className={`tutor-message tutor-message-${m.role}`}>
-                <div className="tutor-bubble">
-                  <p className="tutor-text">{m.content}</p>
-                </div>
-                <CitationCards citations={m.citations ?? []} onOpenCitation={onOpenCitation} />
+                {messages.map((m) => (
+                  <div key={m.id} className={`tutor-message tutor-message-${m.role}`}>
+                    <div className="tutor-bubble">
+                      <p className="tutor-text">{m.content}</p>
+                    </div>
+                    <CitationCards citations={m.citations ?? []} onOpenCitation={onOpenCitation} />
+                  </div>
+                ))}
+
+                {showLiveTurn && (
+                  <div className="tutor-message tutor-message-assistant">
+                    {/* meta 先到：引用卡片在正文之前渲染 */}
+                    <CitationCards citations={streamCitations} onOpenCitation={onOpenCitation} />
+                    <div className="tutor-bubble">
+                      {streamAnswer ? (
+                        <p className="tutor-text">{streamAnswer}</p>
+                      ) : (
+                        !streamError && <p className="tutor-text tutor-placeholder">正在检索本班资料…</p>
+                      )}
+                      {streaming && <span className="tutor-cursor" aria-hidden />}
+                    </div>
+                    {streamError && <div className="alert alert-error tutor-stream-error">{streamError}</div>}
+                  </div>
+                )}
               </div>
-            ))}
 
-            {showLiveTurn && (
-              <div className="tutor-message tutor-message-assistant">
-                {/* meta 先到：引用卡片在正文之前渲染 */}
-                <CitationCards citations={streamCitations} onOpenCitation={onOpenCitation} />
-                <div className="tutor-bubble">
-                  {streamAnswer ? (
-                    <p className="tutor-text">{streamAnswer}</p>
-                  ) : (
-                    !streamError && <p className="tutor-text tutor-placeholder">正在检索本班资料…</p>
-                  )}
-                  {streaming && <span className="tutor-cursor" aria-hidden />}
-                </div>
-                {streamError && <div className="alert alert-error tutor-stream-error">{streamError}</div>}
-              </div>
-            )}
-          </div>
-
-          <form className="tutor-input-row" onSubmit={onSubmit}>
-            <input
-              className="search-input tutor-input"
-              type="text"
-              maxLength={500}
-              value={draft}
-              disabled={streaming}
-              placeholder={streaming ? '助手正在生成回答…' : '输入追问，回车发送'}
-              aria-label="向解题助手追问"
-              onChange={(e) => setDraft(e.target.value)}
-            />
-            <button className="btn btn-primary" type="submit" disabled={streaming || !draft.trim()}>
-              {streaming ? '思考中…' : '发送'}
-            </button>
-          </form>
+              <form className="tutor-input-row" onSubmit={onSubmit}>
+                <input
+                  className="search-input tutor-input"
+                  type="text"
+                  maxLength={500}
+                  value={draft}
+                  disabled={streaming}
+                  placeholder={streaming ? '助手正在生成回答…' : '输入追问，回车发送'}
+                  aria-label="向解题助手追问"
+                  onChange={(e) => setDraft(e.target.value)}
+                />
+                <button className="btn btn-primary" type="submit" disabled={streaming || !draft.trim()}>
+                  {streaming ? '思考中…' : '发送'}
+                </button>
+              </form>
+            </>
+          )}
         </>
       )}
     </section>
