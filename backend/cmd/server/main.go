@@ -18,6 +18,7 @@ import (
 	"campusclaw/internal/embedding"
 	"campusclaw/internal/indexer"
 	"campusclaw/internal/llm"
+	"campusclaw/internal/mcp"
 	"campusclaw/internal/qa"
 	"campusclaw/internal/search"
 	"campusclaw/internal/seed"
@@ -118,7 +119,7 @@ func main() {
 		TopK:     cfg.Qdrant.TopK,
 	}
 
-	// 解题助手：复用同一 Embedder/向量库/LLM，仓储独立。
+	// 解题助手：复用同一 Embedder/向量库/LLM，仓储独立；工具阶段复用同一 MCP 仓储。
 	tutorRepo := &tutor.TutorRepository{DB: database}
 	tutorSvc := &tutor.Service{
 		Repo:     tutorRepo,
@@ -126,6 +127,12 @@ func main() {
 		Vectors:  vectors,
 		LLM:      llmClient,
 		TopK:     cfg.Qdrant.TopK,
+		MinScore: cfg.Qdrant.MinScore,
+		MCPRepo:  tutorRepo,
+		MCPDial: func(baseURL, token string, timeout time.Duration) tutor.MCPCaller {
+			return mcp.NewClient(baseURL, token, timeout)
+		},
+		MCPTimeout: cfg.MCP.Timeout,
 	}
 
 	api := &server.API{
@@ -145,6 +152,11 @@ func main() {
 		QASvc:      qaSvc,
 		Tutor:      tutorSvc,
 		TutorStore: tutorRepo,
+		MCPStore:   tutorRepo,
+		MCPDial: func(baseURL, token string, timeout time.Duration) server.MCPProbe {
+			return mcp.NewClient(baseURL, token, timeout)
+		},
+		MCPTimeout: cfg.MCP.Timeout,
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

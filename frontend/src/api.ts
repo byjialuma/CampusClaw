@@ -11,6 +11,12 @@ import type {
   TutorSkill,
   TutorSkillRef,
   AssistantConfigData,
+  TutorAgent,
+  StudentAgent,
+  MCPServer,
+  MCPCall,
+  CreateMCPServerRequest,
+  UpdateMCPServerRequest,
 } from './types'
 
 const TOKEN_KEY = 'cc_access_token'
@@ -218,14 +224,14 @@ function parseFileName(cd: string | null): string {
 
 // ==================== 解题助手 ====================
 
-// 创建会话（class_id/user_id 由服务端从 token 解析）。
-export async function createConversation(): Promise<TutorConversation> {
+// 创建会话并绑定本班智能体（class_id/user_id 由服务端从 token 解析）。
+export async function createConversation(agentId: number): Promise<TutorConversation> {
   const { status, data } = await request<TutorConversation | { error: string }>(
     '/api/tutor/conversations',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: '{}',
+      body: JSON.stringify({ agentId }),
     },
   )
   if (status === 401) handle401()
@@ -379,19 +385,108 @@ export async function fetchAssistantConfig(): Promise<AssistantConfigData> {
   return data as AssistantConfigData
 }
 
-// 保存本班助手提示词，下一轮提问起生效。
-export async function saveAssistantPrompt(systemPrompt: string): Promise<void> {
-  const { status, data } = await request<{ ok: boolean } | { error: string }>(
-    '/api/tutor/assistant/prompt',
+// 保存本班助手提示词已随智能体配置退役，改用智能体接口维护提示词。
+
+// ==================== 智能体 ====================
+
+// 教师视图：本班智能体列表（含提示词与绑定清单）。
+export async function fetchTeacherAgents(): Promise<TutorAgent[]> {
+  const { status, data } = await request<TutorAgent[] | { error: string }>('/api/tutor/agents')
+  if (status === 401) handle401()
+  if (status !== 200) {
+    const msg = (data as { error?: string }).error ?? '加载智能体列表失败'
+    throw new ApiError(status, msg)
+  }
+  return (data as TutorAgent[]) ?? []
+}
+
+// 学生视图：本班智能体列表（仅 id/name/updatedAt）。
+export async function fetchStudentAgents(): Promise<StudentAgent[]> {
+  const { status, data } = await request<StudentAgent[] | { error: string }>('/api/tutor/agents')
+  if (status === 401) handle401()
+  if (status !== 200) {
+    const msg = (data as { error?: string }).error ?? '加载智能体列表失败'
+    throw new ApiError(status, msg)
+  }
+  return (data as StudentAgent[]) ?? []
+}
+
+// 新建本班智能体（仅教师；同班重名 400）。
+export async function createAgent(name: string, systemPrompt: string): Promise<TutorAgent> {
+  const { status, data } = await request<TutorAgent | { error: string }>('/api/tutor/agents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, systemPrompt }),
+  })
+  if (status === 401) handle401()
+  if (status !== 201) {
+    throw new ApiError(status, (data as { error: string }).error ?? '新建智能体失败')
+  }
+  return data as TutorAgent
+}
+
+// 修改智能体名称与提示词（仅教师；同班重名 400，跨班或不存在 404）。
+export async function updateAgent(
+  id: number,
+  name: string,
+  systemPrompt: string,
+): Promise<TutorAgent> {
+  const { status, data } = await request<TutorAgent | { error: string }>(
+    `/api/tutor/agents/${id}`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ systemPrompt }),
+      body: JSON.stringify({ name, systemPrompt }),
     },
   )
   if (status === 401) handle401()
   if (status !== 200) {
-    throw new ApiError(status, (data as { error: string }).error ?? '保存提示词失败')
+    throw new ApiError(status, (data as { error: string }).error ?? '保存智能体失败')
+  }
+  return data as TutorAgent
+}
+
+// 删除智能体（仅教师；仍被会话引用时服务端返回 409）。
+export async function deleteAgent(id: number): Promise<void> {
+  const { status, data } = await request<{ ok: boolean } | { error: string }>(
+    `/api/tutor/agents/${id}`,
+    { method: 'DELETE' },
+  )
+  if (status === 401) handle401()
+  if (status !== 200) {
+    throw new ApiError(status, (data as { error: string }).error ?? '删除智能体失败')
+  }
+}
+
+// 全量替换智能体绑定的技能（仅教师；含跨班 id 时服务端 404 且绑定不变）。
+export async function replaceAgentSkills(id: number, skillIds: number[]): Promise<void> {
+  const { status, data } = await request<{ ok: boolean } | { error: string }>(
+    `/api/tutor/agents/${id}/skills`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skillIds }),
+    },
+  )
+  if (status === 401) handle401()
+  if (status !== 200) {
+    throw new ApiError(status, (data as { error: string }).error ?? '保存技能绑定失败')
+  }
+}
+
+// 全量替换智能体绑定的材料（仅教师；含跨班 id 时服务端 404 且绑定不变）。
+export async function replaceAgentMaterials(id: number, handoutIds: number[]): Promise<void> {
+  const { status, data } = await request<{ ok: boolean } | { error: string }>(
+    `/api/tutor/agents/${id}/materials`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ handoutIds }),
+    },
+  )
+  if (status === 401) handle401()
+  if (status !== 200) {
+    throw new ApiError(status, (data as { error: string }).error ?? '保存材料绑定失败')
   }
 }
 
@@ -456,4 +551,97 @@ export async function deleteSkill(skillId: number): Promise<void> {
   if (status !== 200) {
     throw new ApiError(status, (data as { error: string }).error ?? '删除技能失败')
   }
+}
+
+// ---------- 教师：MCP 服务器与调用记录 ----------
+
+// 本班已登记的 MCP 服务器列表；响应只回 hasAuth 布尔，不含令牌。
+export async function fetchMCPServers(): Promise<MCPServer[]> {
+  const { status, data } = await request<MCPServer[] | { error: string }>('/api/tutor/mcp/servers')
+  if (status === 401) handle401()
+  if (status !== 200) {
+    const msg = (data as { error?: string }).error ?? '加载 MCP 服务器失败'
+    throw new ApiError(status, msg)
+  }
+  return (data as MCPServer[]) ?? []
+}
+
+// 登记一台本班 MCP 服务器（同班重名服务端返回 400）。
+export async function createMCPServer(req: CreateMCPServerRequest): Promise<MCPServer> {
+  const { status, data } = await request<MCPServer | { error: string }>('/api/tutor/mcp/servers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (status === 401) handle401()
+  if (status !== 201) {
+    throw new ApiError(status, (data as { error: string }).error ?? '登记 MCP 服务器失败')
+  }
+  return data as MCPServer
+}
+
+// 修改 MCP 服务器；authToken 缺省/null 表示保留原令牌，跨班/不存在返回 404。
+export async function updateMCPServer(id: number, req: UpdateMCPServerRequest): Promise<MCPServer> {
+  const { status, data } = await request<MCPServer | { error: string }>(
+    `/api/tutor/mcp/servers/${id}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    },
+  )
+  if (status === 401) handle401()
+  if (status !== 200) {
+    throw new ApiError(status, (data as { error: string }).error ?? '修改 MCP 服务器失败')
+  }
+  return data as MCPServer
+}
+
+// 删除 MCP 服务器。
+export async function deleteMCPServer(id: number): Promise<void> {
+  const { status, data } = await request<{ ok: boolean } | { error: string }>(
+    `/api/tutor/mcp/servers/${id}`,
+    { method: 'DELETE' },
+  )
+  if (status === 401) handle401()
+  if (status !== 200) {
+    throw new ApiError(status, (data as { error: string }).error ?? '删除 MCP 服务器失败')
+  }
+}
+
+// 连接服务器完成握手与工具发现并缓存清单；失败服务端返回 502。
+export async function connectMCPServer(id: number): Promise<MCPServer> {
+  const { status, data } = await request<MCPServer | { error: string }>(
+    `/api/tutor/mcp/servers/${id}/connect`,
+    { method: 'POST' },
+  )
+  if (status === 401) handle401()
+  if (status !== 200) {
+    throw new ApiError(status, (data as { error: string }).error ?? '连接 MCP 服务器失败')
+  }
+  return data as MCPServer
+}
+
+// 断开服务器并清空工具清单。
+export async function disconnectMCPServer(id: number): Promise<MCPServer> {
+  const { status, data } = await request<MCPServer | { error: string }>(
+    `/api/tutor/mcp/servers/${id}/disconnect`,
+    { method: 'POST' },
+  )
+  if (status === 401) handle401()
+  if (status !== 200) {
+    throw new ApiError(status, (data as { error: string }).error ?? '断开 MCP 服务器失败')
+  }
+  return data as MCPServer
+}
+
+// 本班最近调用记录（新→旧）；serverId 可为空（服务器已删）。
+export async function fetchMCPCalls(): Promise<MCPCall[]> {
+  const { status, data } = await request<MCPCall[] | { error: string }>('/api/tutor/mcp/calls')
+  if (status === 401) handle401()
+  if (status !== 200) {
+    const msg = (data as { error?: string }).error ?? '加载调用记录失败'
+    throw new ApiError(status, msg)
+  }
+  return (data as MCPCall[]) ?? []
 }

@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"campusclaw/internal/auth"
+	"campusclaw/internal/model"
 	tutorpkg "campusclaw/internal/tutor"
 )
 
@@ -23,22 +25,35 @@ type tutorAsker interface {
 
 // tutorStore 是会话/助手配置的直接 MySQL 读写（*tutor.TutorRepository 满足）。
 type tutorStore interface {
-	CreateConversation(ctx context.Context, classID, userID int64, title string) (int64, error)
+	CreateConversation(ctx context.Context, classID, userID, agentID int64, title string) (int64, error)
 	ConversationsByUser(ctx context.Context, userID int64) ([]tutorpkg.Conversation, error)
 	ConversationForUser(ctx context.Context, convID, userID int64) (*tutorpkg.Conversation, error)
 	MessagesByConversation(ctx context.Context, convID int64) ([]tutorpkg.Message, error)
 	AssistantConfig(ctx context.Context, classID int64) (*tutorpkg.AssistantConfig, error)
-	SavePrompt(ctx context.Context, classID int64, prompt string) error
 	SetSkillEnabled(ctx context.Context, classID, skillID int64, enabled bool) error
 	CreateSkill(ctx context.Context, classID int64, name, content, source string) (*tutorpkg.Skill, error)
 	DeleteSkill(ctx context.Context, classID, skillID int64) error
+
+	// 智能体 CRUD 与技能/材料绑定（班级一律取参数，来自 JWT claims）。
+	ListAgents(ctx context.Context, classID int64) ([]tutorpkg.Agent, error)
+	GetAgent(ctx context.Context, classID, id int64) (*tutorpkg.Agent, error)
+	CreateAgent(ctx context.Context, classID int64, name, systemPrompt string) (*tutorpkg.Agent, error)
+	UpdateAgent(ctx context.Context, classID, id int64, name, systemPrompt string) (*tutorpkg.Agent, error)
+	DeleteAgent(ctx context.Context, classID, id int64) error
+	ReplaceAgentSkills(ctx context.Context, classID, agentID int64, skillIDs []int64) error
+	ReplaceAgentMaterials(ctx context.Context, classID, agentID int64, handoutIDs []int64) error
+	AgentSkillIDs(ctx context.Context, agentID int64) ([]int64, error)
+	AgentHandoutIDs(ctx context.Context, agentID int64) ([]int64, error)
 }
 
 // 新会话的初始标题（首问提交后由首问前 30 字覆盖）。
 const newConversationTitle = "新的解题会话"
 
-// promptMaxRunes 是教师提示词长度上限。
+// promptMaxRunes 是智能体提示词长度上限。
 const promptMaxRunes = 2000
+
+// agentNameMaxRunes 是智能体名称长度上限。
+const agentNameMaxRunes = 120
 
 // 技能入参校验口径（设计 §6）。
 const (
@@ -54,15 +69,48 @@ type createdConversationResponse struct {
 	Title string `json:"title"`
 }
 
+// assistantResponse 是本班技能库视图（仅教师）：提示词随智能体配置，不再在此返回。
 type assistantResponse struct {
-	ID           int64            `json:"id"`
-	Name         string           `json:"name"`
-	SystemPrompt string           `json:"systemPrompt"`
-	Skills       []tutorpkg.Skill `json:"skills"`
+	ID     int64                `json:"id"`
+	Name   string               `json:"name"`
+	Skills []assistantSkillView `json:"skills"`
 }
 
-type savePromptRequest struct {
+// assistantSkillView 在技能信息基础上附带解析出的工具引用（供技能管理界面展示）。
+type assistantSkillView struct {
+	tutorpkg.Skill
+	Tools []tutorpkg.ToolRef `json:"tools"`
+}
+
+// teacherAgentView 是教师视图的智能体：含提示词与绑定的技能/材料清单。
+type teacherAgentView struct {
+	tutorpkg.Agent
+	SkillIDs   []int64 `json:"skillIds"`
+	HandoutIDs []int64 `json:"handoutIds"`
+}
+
+// studentAgentView 是学生视图的智能体：仅暴露身份与更新时间，不含提示词与绑定。
+type studentAgentView struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type createConversationRequest struct {
+	AgentID int64 `json:"agentId"`
+}
+
+type saveAgentRequest struct {
+	Name         string `json:"name"`
 	SystemPrompt string `json:"systemPrompt"`
+}
+
+type setAgentSkillsRequest struct {
+	SkillIDs []int64 `json:"skillIds"`
+}
+
+type setAgentMaterialsRequest struct {
+	HandoutIDs []int64 `json:"handoutIds"`
 }
 
 type setSkillRequest struct {
@@ -80,8 +128,9 @@ type okResponse struct {
 
 // SSE 各事件的 data 载荷。
 type sseMetaPayload struct {
-	Citations []tutorpkg.Citation `json:"citations"`
-	Skills    []tutorpkg.SkillRef `json:"skills"`
+	Citations []tutorpkg.Citation    `json:"citations"`
+	Skills    []tutorpkg.SkillRef    `json:"skills"`
+	ToolCalls []tutorpkg.ToolCallRef `json:"toolCalls"`
 }
 type sseDeltaPayload struct {
 	Text string `json:"text"`
@@ -95,10 +144,27 @@ type sseErrorPayload struct {
 
 // ---------- 会话 CRUD ----------
 
-// createTutorConversation 创建会话；class_id/user_id 全部取自 JWT claims。
+// createTutorConversation 创建会话：agentId 必填并须属本班；class_id/user_id 全部取自 JWT claims。
 func (a *API) createTutorConversation(w http.ResponseWriter, r *http.Request) {
 	u := auth.CurrentUser(r.Context())
-	id, err := a.TutorStore.CreateConversation(r.Context(), u.ClassID, u.ID, newConversationTitle)
+	var req createConversationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if req.AgentID <= 0 {
+		writeError(w, http.StatusBadRequest, "缺少智能体 agentId")
+		return
+	}
+	if _, err := a.TutorStore.GetAgent(r.Context(), u.ClassID, req.AgentID); err != nil {
+		if errors.Is(err, tutorpkg.ErrAgentNotFound) {
+			writeError(w, http.StatusNotFound, "智能体不存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "创建会话失败")
+		return
+	}
+	id, err := a.TutorStore.CreateConversation(r.Context(), u.ClassID, u.ID, req.AgentID, newConversationTitle)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "创建会话失败")
 		return
@@ -215,7 +281,7 @@ func (s *sseWriter) write(e tutorpkg.Event) {
 	var data any
 	switch e.Type {
 	case tutorpkg.EventMeta:
-		data = sseMetaPayload{Citations: e.Citations, Skills: e.Skills}
+		data = sseMetaPayload{Citations: e.Citations, Skills: e.Skills, ToolCalls: e.ToolCalls}
 	case tutorpkg.EventDelta:
 		data = sseDeltaPayload{Text: e.Text}
 	case tutorpkg.EventDone:
@@ -248,39 +314,212 @@ func (a *API) getTutorAssistant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, assistantResponse{
-		ID:           cfg.AssistantID,
-		Name:         cfg.Name,
-		SystemPrompt: cfg.SystemPrompt,
-		Skills:       cfg.Skills,
+		ID:     cfg.AssistantID,
+		Name:   cfg.Name,
+		Skills: toAssistantSkillViews(cfg.Skills),
 	})
 }
 
-// saveTutorPrompt 保存本班助手提示词（仅教师）；下一轮提问起生效。
-func (a *API) saveTutorPrompt(w http.ResponseWriter, r *http.Request) {
+// toAssistantSkillViews 为每条技能解析工具引用供界面展示；非法引用按空处理，不影响配置读取。
+func toAssistantSkillViews(skills []tutorpkg.Skill) []assistantSkillView {
+	out := make([]assistantSkillView, 0, len(skills))
+	for _, sk := range skills {
+		refs := []tutorpkg.ToolRef{}
+		if parsed, err := tutorpkg.ParseSkillTools(sk.Content); err == nil {
+			refs = parsed.Refs
+		}
+		out = append(out, assistantSkillView{Skill: sk, Tools: refs})
+	}
+	return out
+}
+
+// ---------- 智能体管理 ----------
+
+// listTutorAgents 返回本班智能体列表：教师含提示词与绑定清单，学生仅含 id/name/updatedAt。
+func (a *API) listTutorAgents(w http.ResponseWriter, r *http.Request) {
 	u := auth.CurrentUser(r.Context())
-	var req savePromptRequest
+	agents, err := a.TutorStore.ListAgents(r.Context(), u.ClassID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取智能体列表失败")
+		return
+	}
+	if u.Role == model.RoleTeacher {
+		views := make([]teacherAgentView, 0, len(agents))
+		for _, ag := range agents {
+			skillIDs, err := a.TutorStore.AgentSkillIDs(r.Context(), ag.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "读取智能体绑定失败")
+				return
+			}
+			handoutIDs, err := a.TutorStore.AgentHandoutIDs(r.Context(), ag.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "读取智能体绑定失败")
+				return
+			}
+			views = append(views, teacherAgentView{Agent: ag, SkillIDs: skillIDs, HandoutIDs: handoutIDs})
+		}
+		writeJSON(w, http.StatusOK, views)
+		return
+	}
+	views := make([]studentAgentView, 0, len(agents))
+	for _, ag := range agents {
+		views = append(views, studentAgentView{ID: ag.ID, Name: ag.Name, UpdatedAt: ag.UpdatedAt})
+	}
+	writeJSON(w, http.StatusOK, views)
+}
+
+// createTutorAgent 新建本班智能体（仅教师）；同班重名 400。
+func (a *API) createTutorAgent(w http.ResponseWriter, r *http.Request) {
+	u := auth.CurrentUser(r.Context())
+	name, prompt, errMsg := decodeAgentInput(r)
+	if errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+	ag, err := a.TutorStore.CreateAgent(r.Context(), u.ClassID, name, prompt)
+	if err != nil {
+		if errors.Is(err, tutorpkg.ErrAgentNameConflict) {
+			writeError(w, http.StatusBadRequest, "本班已存在同名智能体")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "新建智能体失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, teacherAgentView{Agent: *ag, SkillIDs: []int64{}, HandoutIDs: []int64{}})
+}
+
+// updateTutorAgent 修改本班智能体名称与提示词（仅教师）；同班重名 400，跨班或不存在 404。
+func (a *API) updateTutorAgent(w http.ResponseWriter, r *http.Request) {
+	u := auth.CurrentUser(r.Context())
+	agentID, ok := parsePathID(r, "id")
+	if !ok {
+		writeError(w, http.StatusNotFound, "智能体不存在")
+		return
+	}
+	name, prompt, errMsg := decodeAgentInput(r)
+	if errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+	ag, err := a.TutorStore.UpdateAgent(r.Context(), u.ClassID, agentID, name, prompt)
+	if err != nil {
+		switch {
+		case errors.Is(err, tutorpkg.ErrAgentNameConflict):
+			writeError(w, http.StatusBadRequest, "本班已存在同名智能体")
+		case errors.Is(err, tutorpkg.ErrAgentNotFound):
+			writeError(w, http.StatusNotFound, "智能体不存在")
+		default:
+			writeError(w, http.StatusInternalServerError, "更新智能体失败")
+		}
+		return
+	}
+	skillIDs, err := a.TutorStore.AgentSkillIDs(r.Context(), ag.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取智能体绑定失败")
+		return
+	}
+	handoutIDs, err := a.TutorStore.AgentHandoutIDs(r.Context(), ag.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取智能体绑定失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, teacherAgentView{Agent: *ag, SkillIDs: skillIDs, HandoutIDs: handoutIDs})
+}
+
+// deleteTutorAgent 删除本班智能体（仅教师）；仍被会话引用时 409。
+func (a *API) deleteTutorAgent(w http.ResponseWriter, r *http.Request) {
+	u := auth.CurrentUser(r.Context())
+	agentID, ok := parsePathID(r, "id")
+	if !ok {
+		writeError(w, http.StatusNotFound, "智能体不存在")
+		return
+	}
+	if err := a.TutorStore.DeleteAgent(r.Context(), u.ClassID, agentID); err != nil {
+		switch {
+		case errors.Is(err, tutorpkg.ErrAgentInUse):
+			writeError(w, http.StatusConflict, "智能体仍被会话引用，无法删除")
+		case errors.Is(err, tutorpkg.ErrAgentNotFound):
+			writeError(w, http.StatusNotFound, "智能体不存在")
+		default:
+			writeError(w, http.StatusInternalServerError, "删除智能体失败")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, okResponse{OK: true})
+}
+
+// putAgentSkills 全量替换智能体绑定的技能（仅教师）；任一技能不属本班时 404 且绑定不变。
+func (a *API) putAgentSkills(w http.ResponseWriter, r *http.Request) {
+	u := auth.CurrentUser(r.Context())
+	agentID, ok := parsePathID(r, "id")
+	if !ok {
+		writeError(w, http.StatusNotFound, "智能体不存在")
+		return
+	}
+	var req setAgentSkillsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	prompt := strings.TrimSpace(req.SystemPrompt)
-	if prompt == "" {
-		writeError(w, http.StatusBadRequest, "提示词不能为空")
-		return
-	}
-	if len([]rune(prompt)) > promptMaxRunes {
-		writeError(w, http.StatusBadRequest, "提示词长度不能超过 2000 字")
-		return
-	}
-	if err := a.TutorStore.SavePrompt(r.Context(), u.ClassID, prompt); err != nil {
-		if errors.Is(err, tutorpkg.ErrAssistantNotFound) {
-			writeError(w, http.StatusNotFound, "本班助手不存在")
-			return
+	if err := a.TutorStore.ReplaceAgentSkills(r.Context(), u.ClassID, agentID, req.SkillIDs); err != nil {
+		switch {
+		case errors.Is(err, tutorpkg.ErrAgentNotFound):
+			writeError(w, http.StatusNotFound, "智能体不存在")
+		case errors.Is(err, tutorpkg.ErrSkillNotFound):
+			writeError(w, http.StatusNotFound, "技能不存在")
+		default:
+			writeError(w, http.StatusInternalServerError, "保存技能绑定失败")
 		}
-		writeError(w, http.StatusInternalServerError, "保存提示词失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, okResponse{OK: true})
+}
+
+// putAgentMaterials 全量替换智能体绑定的材料（仅教师）；任一材料不属本班时 404 且绑定不变。
+func (a *API) putAgentMaterials(w http.ResponseWriter, r *http.Request) {
+	u := auth.CurrentUser(r.Context())
+	agentID, ok := parsePathID(r, "id")
+	if !ok {
+		writeError(w, http.StatusNotFound, "智能体不存在")
+		return
+	}
+	var req setAgentMaterialsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := a.TutorStore.ReplaceAgentMaterials(r.Context(), u.ClassID, agentID, req.HandoutIDs); err != nil {
+		switch {
+		case errors.Is(err, tutorpkg.ErrAgentNotFound):
+			writeError(w, http.StatusNotFound, "智能体不存在")
+		case errors.Is(err, tutorpkg.ErrHandoutNotFound):
+			writeError(w, http.StatusNotFound, "材料不存在")
+		default:
+			writeError(w, http.StatusInternalServerError, "保存材料绑定失败")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, okResponse{OK: true})
+}
+
+// decodeAgentInput 解析并校验智能体名称/提示词；提示词允许为空。返回错误文案（空串表示通过）。
+func decodeAgentInput(r *http.Request) (string, string, string) {
+	var req saveAgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return "", "", "请求格式错误"
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return "", "", "智能体名称不能为空"
+	}
+	if len([]rune(name)) > agentNameMaxRunes {
+		return "", "", "智能体名称长度不能超过 120 字"
+	}
+	prompt := strings.TrimSpace(req.SystemPrompt)
+	if len([]rune(prompt)) > promptMaxRunes {
+		return "", "", "提示词长度不能超过 2000 字"
+	}
+	return name, prompt, ""
 }
 
 // putTutorSkill 启用/停用技能（仅教师）；技能必须属于本班助手，否则 404。
@@ -317,6 +556,10 @@ func (a *API) createTutorSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	name, content, errMsg := validateSkillInput(req.Name, req.Content)
 	if errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+	if errMsg := a.validateSkillToolRefs(r.Context(), u.ClassID, content); errMsg != "" {
 		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
@@ -368,6 +611,10 @@ func (a *API) uploadTutorSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	name, content, errMsg := validateSkillInput(name, string(data))
 	if errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+	if errMsg := a.validateSkillToolRefs(r.Context(), u.ClassID, content); errMsg != "" {
 		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}

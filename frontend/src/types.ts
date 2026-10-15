@@ -52,6 +52,8 @@ export interface Citation {
   snippet: string
   locator: Locator
   score: number
+  // 引用列表序号（自 1 递增），与回答文本中的 [n] 标号一致。
+  index: number
 }
 
 // 知识问答响应。
@@ -62,9 +64,10 @@ export interface QAResult {
 
 // ---------- 解题助手 ----------
 
-// 一次多轮解题会话，归属唯一学生。
+// 一次多轮解题会话，归属唯一学生；绑定一个本班智能体（会话内不切换）。
 export interface TutorConversation {
   id: number
+  agentId: number
   title: string
   createdAt?: string
 }
@@ -89,6 +92,14 @@ export interface TutorMessage {
 // 技能来源：seed=内置种子、upload=教师上传、online=教师在线新建。
 export type TutorSkillSource = 'seed' | 'upload' | 'online'
 
+// 技能正文「工具」行解析出的一条引用。
+export interface ToolRef {
+  raw: string
+  name: string
+  server?: string
+  builtin: boolean
+}
+
 // 助手的一个技能：指令文档（名称+内容），教师可上传/新建/启停/删除。
 export interface TutorSkill {
   id: number
@@ -98,14 +109,33 @@ export interface TutorSkill {
   source: TutorSkillSource
   builtin: boolean
   enabled: boolean
+  // 技能正文「工具」行解析出的引用；无引用时服务端可能返回 null。
+  tools?: ToolRef[] | null
 }
 
-// 本班助手配置（教师侧）。
+// 本班技能库视图（教师侧）；提示词随智能体配置，不在此返回。
 export interface AssistantConfigData {
   id: number
   name: string
-  systemPrompt: string
   skills: TutorSkill[]
+}
+
+// 教师视图的智能体：独立提示词 + 绑定的技能/材料 id 清单。
+export interface TutorAgent {
+  id: number
+  name: string
+  systemPrompt: string
+  createdAt: string
+  updatedAt: string
+  skillIds: number[]
+  handoutIds: number[]
+}
+
+// 学生视图的智能体：仅身份与更新时间，不含提示词与绑定。
+export interface StudentAgent {
+  id: number
+  name: string
+  updatedAt: string
 }
 
 // 流式提问过程中前端收到的事件。
@@ -114,3 +144,52 @@ export type TutorStreamEvent =
   | { type: 'delta'; text: string }
   | { type: 'done'; messageId: number }
   | { type: 'error'; error: string }
+
+// ---------- MCP 服务器与工具 ----------
+
+// MCP 服务器发现的一个远端工具（主机侧缓存清单里的一项）。
+export interface MCPTool {
+  name: string
+  description: string
+  inputSchema?: unknown
+}
+
+// 教师登记的一台本班 MCP 服务器；响应只回 hasAuth 布尔，永不含令牌。
+export interface MCPServer {
+  id: number
+  name: string
+  baseUrl: string
+  hasAuth: boolean
+  connected: boolean
+  tools: MCPTool[]
+  lastError?: string
+}
+
+// 登记 MCP 服务器的请求体（令牌仅在此请求体出现，不进入任何响应类型）。
+export interface CreateMCPServerRequest {
+  name: string
+  baseUrl: string
+  authToken: string
+}
+
+// 修改 MCP 服务器请求体；authToken 缺省/null 表示保留原令牌。
+export interface UpdateMCPServerRequest {
+  name: string
+  baseUrl: string
+  authToken?: string | null
+}
+
+// 一次远端工具调用的审计记录；serverId 可为空（服务器已删除）。
+export interface MCPCall {
+  id: number
+  serverId?: number
+  serverName: string
+  toolRef: string
+  status: 'success' | 'denied' | 'error'
+  error?: string
+  durationMs: number
+  userId?: number
+  username?: string
+  conversationId?: number
+  createdAt: string
+}

@@ -6,6 +6,7 @@ import {
   fetchConversations,
   fetchMaterials,
   fetchMe,
+  fetchStudentAgents,
   fetchTutorMessages,
   getToken,
 } from '../api'
@@ -14,21 +15,34 @@ import type {
   Locator,
   Material,
   Me,
+  StudentAgent,
   TutorConversation,
   TutorMessage,
 } from '../types'
 import TopBar from '../components/TopBar'
 import MaterialView from '../components/MaterialView'
 import AssistantPanel from '../components/AssistantPanel'
-import AssistantSettings from '../components/AssistantSettings'
+import AgentManagement from '../components/AgentManagement'
 import SkillManagement from '../components/SkillManagement'
 import StudentList from '../components/StudentList'
 import TutorView from '../components/TutorView'
 
 // 教师标签页类型。
-type TeacherView = 'students' | 'materials' | 'settings' | 'skills'
+type TeacherView = 'students' | 'materials' | 'agents' | 'skills'
 // 学生标签页类型。
 type StudentView = 'tutor' | 'materials'
+
+// pickDefaultAgentId 按「更新时间降序、同刻编号较大者优先」选出默认智能体。
+function pickDefaultAgentId(agents: StudentAgent[]): number | null {
+  if (agents.length === 0) return null
+  const sorted = [...agents].sort((a, b) => {
+    const ta = new Date(a.updatedAt).getTime()
+    const tb = new Date(b.updatedAt).getTime()
+    if (ta !== tb) return tb - ta
+    return b.id - a.id
+  })
+  return sorted[0].id
+}
 
 export default function HomePage() {
   const [me, setMe] = useState<Me | null>(null)
@@ -54,6 +68,10 @@ export default function HomePage() {
   const [streamError, setStreamError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
 
+  // 学生侧：本班智能体列表与当前选中项（新会话默认绑定它）。
+  const [agents, setAgents] = useState<StudentAgent[]>([])
+  const [activeAgentId, setActiveAgentId] = useState<number | null>(null)
+
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -73,9 +91,10 @@ export default function HomePage() {
         setMaterials(items)
         setLoading(false)
       }
-      // 学生默认进入解题助手，预加载会话列表。
+      // 学生默认进入解题助手，预加载会话列表与智能体列表。
       if (!cancelled && u.role === 'student') {
-        loadConversations()
+        await loadConversations()
+        await loadAgents()
       }
     })()
     return () => {
@@ -103,10 +122,25 @@ export default function HomePage() {
     }
   }
 
+  // 加载本班智能体并按规则选中默认项（教师最近更新者；无智能体则为 null）。
+  async function loadAgents() {
+    try {
+      const list = await fetchStudentAgents()
+      setAgents(list)
+      setActiveAgentId(pickDefaultAgentId(list))
+    } catch (err) {
+      setStreamError(err instanceof Error ? err.message : '加载智能体列表失败')
+    }
+  }
+
   async function handleNewConversation() {
+    if (activeAgentId === null) {
+      setStreamError('本班尚未配置智能体，暂时无法提问')
+      return
+    }
     setCreatingConv(true)
     try {
-      const c = await createConversation()
+      const c = await createConversation(activeAgentId)
       setConversations((prev) => [c, ...prev])
       setActiveConv(c)
       setConvMessages([])
@@ -121,6 +155,8 @@ export default function HomePage() {
   async function handleSelectConversation(c: TutorConversation) {
     if (streaming) abortRef.current?.abort()
     setActiveConv(c)
+    // 切换既有会话时，左侧智能体选择同步为该会话绑定者（会话内不切换智能体）。
+    setActiveAgentId(c.agentId)
     clearLiveTurn()
     setConvLoading(true)
     try {
@@ -149,10 +185,14 @@ export default function HomePage() {
 
   async function handleAskTutor(question: string) {
     let conv = activeConv
-    // 尚未选择会话时自动创建一个。
+    // 尚未选择会话时自动创建一个，并绑定当前选中的智能体。
     if (!conv) {
+      if (activeAgentId === null) {
+        setStreamError('本班尚未配置智能体，暂时无法提问')
+        return
+      }
       try {
-        conv = await createConversation()
+        conv = await createConversation(activeAgentId)
         setConversations((prev) => [conv as TutorConversation, ...prev])
         setActiveConv(conv)
       } catch (err) {
@@ -265,10 +305,10 @@ export default function HomePage() {
               </button>
               <button
                 type="button"
-                className={`nav-tab${teacherView === 'settings' ? ' active' : ''}`}
-                onClick={() => setTeacherView('settings')}
+                className={`nav-tab${teacherView === 'agents' ? ' active' : ''}`}
+                onClick={() => setTeacherView('agents')}
               >
-                助手设置
+                智能体管理
               </button>
               <button
                 type="button"
@@ -295,8 +335,8 @@ export default function HomePage() {
                   onUploaded={(m) => setMaterials((prev) => [m, ...prev])}
                   onClearHint={() => setLocatorHint(null)}
                 />
-              ) : teacherView === 'settings' ? (
-                <AssistantSettings />
+              ) : teacherView === 'agents' ? (
+                <AgentManagement />
               ) : (
                 <SkillManagement />
               )}
@@ -321,6 +361,27 @@ export default function HomePage() {
                   资料库
                 </button>
               </div>
+              <div className="nav-sidebar-agents">
+                <p className="nav-sidebar-agents-title">本班智能体</p>
+                {agents.length === 0 ? (
+                  <p className="muted nav-sidebar-empty">本班尚未配置智能体</p>
+                ) : (
+                  <ul className="agent-select-list">
+                    {agents.map((a) => (
+                      <li key={a.id}>
+                        <button
+                          type="button"
+                          className={`agent-select-item${a.id === activeAgentId ? ' active' : ''}`}
+                          onClick={() => setActiveAgentId(a.id)}
+                          title={a.name}
+                        >
+                          {a.name}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
               <AssistantPanel
                 conversations={conversations}
                 activeId={activeConv?.id ?? null}
@@ -344,6 +405,7 @@ export default function HomePage() {
                   streamError={streamError}
                   onAsk={handleAskTutor}
                   onOpenCitation={handleOpenTutorCitation}
+                  inputDisabled={agents.length === 0}
                 />
               ) : (
                 <MaterialView

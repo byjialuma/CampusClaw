@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CampusClaw API · Swagger</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  <style>
+    body { margin: 0; background: #faf5f6; }
+    .cc-banner {
+      background: #94070a; color: #fff; padding: 10px 24px;
+      font: 600 15px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    }
+    .cc-banner a { color: #ffd9da; text-decoration: none; }
+    .cc-banner a:hover { text-decoration: underline; }
+    .cc-banner .hint { font-weight: 400; font-size: 13px; opacity: .92; }
+    .swagger-ui .topbar { display: none; }
+  </style>
+</head>
+<body>
+  <div class="cc-banner">
+    <span>CampusClaw API 文档</span>
+    <span class="hint">先试 <code>POST /api/sessions</code> 登录拿 accessToken → 点右上角 Authorize 填入 → 即可试调其余接口</span>
+    <a href="/">返回应用首页</a>
+    <a href="/openapi.json" target="_blank" rel="noopener">openapi.json</a>
+  </div>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: '/openapi.json',
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      persistAuthorization: true,
+      displayRequestDuration: true,
+      tryItOutEnabled: true,
+      defaultModelsExpandDepth: 1,
+      docExpansion: 'list'
+    });
+  </script>
+</body>
+</html>

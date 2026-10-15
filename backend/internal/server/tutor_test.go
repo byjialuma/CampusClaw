@@ -91,40 +91,60 @@ type storedMessage struct {
 }
 
 // srvTutorStore 同时满足 server.tutorStore 与 tutor.Repo 两个接口。
+// 智能体（agents）与技能库（skills）均按 class_id 隔离；绑定（agentSkills/agentHandouts）按 agent_id。
 type srvTutorStore struct {
-	mu        sync.Mutex
-	convs     map[int64]*tutorpkg.Conversation
-	messages  map[int64][]storedMessage
-	prompts   map[int64]string
-	skills    map[int64][]tutorpkg.Skill
-	nextConv  int64
-	nextMsg   int64
-	nextSkill int64
+	mu            sync.Mutex
+	convs         map[int64]*tutorpkg.Conversation
+	messages      map[int64][]storedMessage
+	skills        map[int64][]tutorpkg.Skill // keyed by classID
+	agents        map[int64]*tutorpkg.Agent
+	agentSkills   map[int64][]int64
+	agentHandouts map[int64][]int64
+	nextConv      int64
+	nextMsg       int64
+	nextSkill     int64
+	nextAgent     int64
 }
 
 func newSrvTutorStore() *srvTutorStore {
-	return &srvTutorStore{
+	s := &srvTutorStore{
 		convs:    map[int64]*tutorpkg.Conversation{},
 		messages: map[int64][]storedMessage{},
-		prompts: map[int64]string{
-			1: "你是一位严格的数学助教。",
-			2: "你是B班数学助教。",
-		},
 		skills: map[int64][]tutorpkg.Skill{
-			1: {{ID: 50, Name: "解题引导", Description: "引导", Content: "学生正在解题，请给出解题思路与步骤引导。",
+			// 「适用条件」行使技能可被词法路由命中（问题含「集合」即命中）。
+			1: {{ID: 50, Name: "解题引导", Description: "引导",
+				Content: "学生正在解题，请给出解题思路与步骤引导。\n适用条件：集合，题目",
 				Source: "seed", Builtin: true, Enabled: true}},
-			2: {{ID: 60, Name: "解题引导", Description: "引导", Content: "学生正在解题，请给出解题思路与步骤引导。",
+			2: {{ID: 60, Name: "解题引导", Description: "引导",
+				Content: "学生正在解题，请给出解题思路与步骤引导。\n适用条件：集合，题目",
 				Source: "seed", Builtin: true, Enabled: true}},
 		},
+		agents:        map[int64]*tutorpkg.Agent{},
+		agentSkills:   map[int64][]int64{},
+		agentHandouts: map[int64][]int64{},
+		nextSkill:     60, // 预置技能 id 已达 60，避免新建技能与预置冲突
+		nextAgent:     2,
 	}
+	now := time.Now()
+	// agent 1 属 A 班：提示词 + 绑定技能 50 与材料 100（与 srvHits 的 documentId 对齐）。
+	s.agents[1] = &tutorpkg.Agent{ID: 1, ClassID: 1, Name: "数学助教",
+		SystemPrompt: "你是一位严格的数学助教。", CreatedAt: now, UpdatedAt: now}
+	// agent 2 属 B 班：提示词 + 绑定技能 60。
+	s.agents[2] = &tutorpkg.Agent{ID: 2, ClassID: 2, Name: "B班助教",
+		SystemPrompt: "你是B班数学助教。", CreatedAt: now, UpdatedAt: now}
+	s.agentSkills[1] = []int64{50}
+	s.agentSkills[2] = []int64{60}
+	s.agentHandouts[1] = []int64{100}
+	s.agentHandouts[2] = []int64{}
+	return s
 }
 
-func (s *srvTutorStore) CreateConversation(_ context.Context, classID, userID int64, title string) (int64, error) {
+func (s *srvTutorStore) CreateConversation(_ context.Context, classID, userID, agentID int64, title string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextConv++
 	s.convs[s.nextConv] = &tutorpkg.Conversation{
-		ID: s.nextConv, ClassID: classID, UserID: userID, Title: title, CreatedAt: time.Now(),
+		ID: s.nextConv, ClassID: classID, UserID: userID, AgentID: agentID, Title: title, CreatedAt: time.Now(),
 	}
 	s.messages[s.nextConv] = nil
 	return s.nextConv, nil
@@ -171,24 +191,199 @@ func (s *srvTutorStore) MessagesByConversation(_ context.Context, convID int64) 
 func (s *srvTutorStore) AssistantConfig(_ context.Context, classID int64) (*tutorpkg.AssistantConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	prompt, ok := s.prompts[classID]
+	skills, ok := s.skills[classID]
 	if !ok {
 		return nil, tutorpkg.ErrAssistantNotFound
 	}
 	return &tutorpkg.AssistantConfig{
-		AssistantID: classID * 10, Name: "解题助手",
-		SystemPrompt: prompt, Skills: s.skills[classID],
+		AssistantID: classID * 10, Name: "解题助手", Skills: skills,
 	}, nil
 }
 
-func (s *srvTutorStore) SavePrompt(_ context.Context, classID int64, prompt string) error {
+// ---------- 智能体与绑定（server.tutorStore + tutor.Repo） ----------
+
+func (s *srvTutorStore) GetAgent(_ context.Context, classID, id int64) (*tutorpkg.Agent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.prompts[classID]; !ok {
-		return tutorpkg.ErrAssistantNotFound
+	ag, ok := s.agents[id]
+	if !ok || ag.ClassID != classID {
+		return nil, tutorpkg.ErrAgentNotFound
 	}
-	s.prompts[classID] = prompt
+	cp := *ag
+	return &cp, nil
+}
+
+func (s *srvTutorStore) ListAgents(_ context.Context, classID int64) ([]tutorpkg.Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []tutorpkg.Agent{}
+	for _, id := range sortedAgentIDs(s.agents) {
+		if ag := s.agents[id]; ag.ClassID == classID {
+			out = append(out, *ag)
+		}
+	}
+	return out, nil
+}
+
+func (s *srvTutorStore) CreateAgent(_ context.Context, classID int64, name, systemPrompt string) (*tutorpkg.Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ag := range s.agents {
+		if ag.ClassID == classID && ag.Name == name {
+			return nil, tutorpkg.ErrAgentNameConflict
+		}
+	}
+	s.nextAgent++
+	now := time.Now()
+	ag := &tutorpkg.Agent{ID: s.nextAgent, ClassID: classID, Name: name,
+		SystemPrompt: systemPrompt, CreatedAt: now, UpdatedAt: now}
+	s.agents[ag.ID] = ag
+	s.agentSkills[ag.ID] = []int64{}
+	s.agentHandouts[ag.ID] = []int64{}
+	cp := *ag
+	return &cp, nil
+}
+
+func (s *srvTutorStore) UpdateAgent(_ context.Context, classID, id int64, name, systemPrompt string) (*tutorpkg.Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ag, ok := s.agents[id]
+	if !ok || ag.ClassID != classID {
+		return nil, tutorpkg.ErrAgentNotFound
+	}
+	for _, other := range s.agents {
+		if other.ID != id && other.ClassID == classID && other.Name == name {
+			return nil, tutorpkg.ErrAgentNameConflict
+		}
+	}
+	ag.Name = name
+	ag.SystemPrompt = systemPrompt
+	ag.UpdatedAt = time.Now()
+	cp := *ag
+	return &cp, nil
+}
+
+func (s *srvTutorStore) DeleteAgent(_ context.Context, classID, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ag, ok := s.agents[id]
+	if !ok || ag.ClassID != classID {
+		return tutorpkg.ErrAgentNotFound
+	}
+	for _, c := range s.convs {
+		if c.AgentID == id {
+			return tutorpkg.ErrAgentInUse
+		}
+	}
+	delete(s.agents, id)
+	delete(s.agentSkills, id)
+	delete(s.agentHandouts, id)
 	return nil
+}
+
+func (s *srvTutorStore) ReplaceAgentSkills(_ context.Context, classID, agentID int64, skillIDs []int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ag, ok := s.agents[agentID]
+	if !ok || ag.ClassID != classID {
+		return tutorpkg.ErrAgentNotFound
+	}
+	for _, id := range skillIDs {
+		found := false
+		for _, sk := range s.skills[classID] {
+			if sk.ID == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return tutorpkg.ErrSkillNotFound
+		}
+	}
+	s.agentSkills[agentID] = dedupeInt64(skillIDs)
+	return nil
+}
+
+func (s *srvTutorStore) ReplaceAgentMaterials(_ context.Context, classID, agentID int64, handoutIDs []int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ag, ok := s.agents[agentID]
+	if !ok || ag.ClassID != classID {
+		return tutorpkg.ErrAgentNotFound
+	}
+	for _, id := range handoutIDs {
+		if !s.handoutInClass(classID, id) {
+			return tutorpkg.ErrHandoutNotFound
+		}
+	}
+	s.agentHandouts[agentID] = dedupeInt64(handoutIDs)
+	return nil
+}
+
+func (s *srvTutorStore) AgentSkillIDs(_ context.Context, agentID int64) ([]int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64{}, s.agentSkills[agentID]...), nil
+}
+
+func (s *srvTutorStore) AgentHandoutIDs(_ context.Context, agentID int64) ([]int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64{}, s.agentHandouts[agentID]...), nil
+}
+
+// AgentConfig 返回一次提问所需的智能体配置：提示词 + 绑定且已启用的技能（id 升序）+ 绑定材料。
+func (s *srvTutorStore) AgentConfig(_ context.Context, classID, agentID int64) (*tutorpkg.AgentConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ag, ok := s.agents[agentID]
+	if !ok || ag.ClassID != classID {
+		return nil, tutorpkg.ErrAgentNotFound
+	}
+	cfg := &tutorpkg.AgentConfig{
+		AgentID: agentID, ClassID: classID, Name: ag.Name,
+		SystemPrompt: ag.SystemPrompt, Skills: []tutorpkg.Skill{},
+		HandoutIDs: append([]int64{}, s.agentHandouts[agentID]...),
+	}
+	bound := map[int64]struct{}{}
+	for _, id := range s.agentSkills[agentID] {
+		bound[id] = struct{}{}
+	}
+	for _, sk := range s.skills[classID] {
+		if _, ok := bound[sk.ID]; ok && sk.Enabled {
+			cfg.Skills = append(cfg.Skills, sk)
+		}
+	}
+	return cfg, nil
+}
+
+// handoutInClass 判断讲义是否属于本班：测试中仅 A 班持有材料 100。
+func (s *srvTutorStore) handoutInClass(classID, handoutID int64) bool {
+	return classID == 1 && handoutID == 100
+}
+
+// sortedAgentIDs 返回稳定的 agent id 升序切片。
+func sortedAgentIDs(m map[int64]*tutorpkg.Agent) []int64 {
+	ids := make([]int64, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+// dedupeInt64 按首次出现顺序去重。
+func dedupeInt64(ids []int64) []int64 {
+	seen := map[int64]struct{}{}
+	out := []int64{}
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 func (s *srvTutorStore) SetSkillEnabled(_ context.Context, classID, skillID int64, enabled bool) error {
@@ -210,7 +405,7 @@ func (s *srvTutorStore) SetSkillEnabled(_ context.Context, classID, skillID int6
 func (s *srvTutorStore) CreateSkill(_ context.Context, classID int64, name, content, source string) (*tutorpkg.Skill, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.prompts[classID]; !ok {
+	if _, ok := s.skills[classID]; !ok {
 		return nil, tutorpkg.ErrAssistantNotFound
 	}
 	s.nextSkill++
@@ -352,7 +547,7 @@ func TestTutorCreateConversation(t *testing.T) {
 	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, nil, nil)
 
 	req := signedReq(t, api, testUser("studentA1"), http.MethodPost,
-		"/api/tutor/conversations", strings.NewReader("{}"))
+		"/api/tutor/conversations", strings.NewReader(`{"agentId":1}`))
 	rec := httptest.NewRecorder()
 	api.NewHandler().ServeHTTP(rec, req)
 
@@ -374,9 +569,9 @@ func TestTutorCreateConversation(t *testing.T) {
 
 func TestTutorListConversations(t *testing.T) {
 	store := newSrvTutorStore()
-	id1, _ := store.CreateConversation(context.Background(), 1, 2, "会话一")
-	id2, _ := store.CreateConversation(context.Background(), 1, 2, "会话二")
-	_, _ = store.CreateConversation(context.Background(), 1, 3, "他人会话")
+	id1, _ := store.CreateConversation(context.Background(), 1, 2, 1, "会话一")
+	id2, _ := store.CreateConversation(context.Background(), 1, 2, 1, "会话二")
+	_, _ = store.CreateConversation(context.Background(), 1, 3, 1, "他人会话")
 
 	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, nil, nil)
 	req := signedReq(t, api, testUser("studentA1"), http.MethodGet,
@@ -400,7 +595,7 @@ func TestTutorListConversations(t *testing.T) {
 
 func TestTutorGetMessagesOwnerAnd404(t *testing.T) {
 	store := newSrvTutorStore()
-	convID, _ := store.CreateConversation(context.Background(), 1, 2, "会话")
+	convID, _ := store.CreateConversation(context.Background(), 1, 2, 1, "会话")
 	_, _ = store.AppendMessage(context.Background(), convID,
 		tutorpkg.NewMessage{Role: tutorpkg.RoleUser, Content: "提问"})
 
@@ -446,7 +641,7 @@ func TestTutorAskSSESequenceAndPersistence(t *testing.T) {
 	stream := &srvFakeStreamLLM{deltas: []string{"先回顾", "定义"}}
 	api, _ := newTutorTestAPI(store, stream, srvHits(), nil)
 
-	convID, _ := store.CreateConversation(context.Background(), 1, 2, newConversationTitle)
+	convID, _ := store.CreateConversation(context.Background(), 1, 2, 1, newConversationTitle)
 	body, _ := json.Marshal(map[string]string{"question": "什么是集合？"})
 	req := signedReq(t, api, testUser("studentA1"), http.MethodPost,
 		fmt.Sprintf("/api/tutor/conversations/%d/messages", convID), bytes.NewReader(body))
@@ -532,7 +727,7 @@ func TestTutorAskSSESequenceAndPersistence(t *testing.T) {
 
 func TestTutorAskValidation400(t *testing.T) {
 	store := newSrvTutorStore()
-	convID, _ := store.CreateConversation(context.Background(), 1, 2, "会话")
+	convID, _ := store.CreateConversation(context.Background(), 1, 2, 1, "会话")
 	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, srvHits(), nil)
 
 	path := fmt.Sprintf("/api/tutor/conversations/%d/messages", convID)
@@ -556,7 +751,7 @@ func TestTutorAskValidation400(t *testing.T) {
 // 他人会话提问 → 404。
 func TestTutorAskOtherConversation404(t *testing.T) {
 	store := newSrvTutorStore()
-	convID, _ := store.CreateConversation(context.Background(), 1, 2, "A1 会话")
+	convID, _ := store.CreateConversation(context.Background(), 1, 2, 1, "A1 会话")
 	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, srvHits(), nil)
 
 	body, _ := json.Marshal(map[string]string{"question": "题目"})
@@ -579,11 +774,16 @@ func TestTutorRoutesRequireAuth(t *testing.T) {
 		{http.MethodGet, "/api/tutor/conversations/1/messages"},
 		{http.MethodPost, "/api/tutor/conversations/1/messages"},
 		{http.MethodGet, "/api/tutor/assistant"},
-		{http.MethodPut, "/api/tutor/assistant/prompt"},
 		{http.MethodPut, "/api/tutor/assistant/skills/1"},
 		{http.MethodPost, "/api/tutor/assistant/skills"},
 		{http.MethodPost, "/api/tutor/assistant/skills/upload"},
 		{http.MethodDelete, "/api/tutor/assistant/skills/1"},
+		{http.MethodGet, "/api/tutor/agents"},
+		{http.MethodPost, "/api/tutor/agents"},
+		{http.MethodPut, "/api/tutor/agents/1"},
+		{http.MethodDelete, "/api/tutor/agents/1"},
+		{http.MethodPut, "/api/tutor/agents/1/skills"},
+		{http.MethodPut, "/api/tutor/agents/1/materials"},
 	} {
 		req, _ := http.NewRequest(tc.method, tc.path, strings.NewReader("{}"))
 		rec := httptest.NewRecorder()
@@ -607,13 +807,20 @@ func TestTutorStudentManagementForbidden(t *testing.T) {
 		t.Fatalf("学生读配置期望 403，得到 %d", rec.Code)
 	}
 
-	// PUT 提示词
-	req = signedReq(t, api, testUser("studentA1"), http.MethodPut,
-		"/api/tutor/assistant/prompt", strings.NewReader(`{"systemPrompt":"x"}`))
-	rec = httptest.NewRecorder()
-	api.NewHandler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("学生改提示词期望 403，得到 %d", rec.Code)
+	// 智能体写接口：学生一律 403（列表 GET 允许，仅返回 id/name/updatedAt）。
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodPost, "/api/tutor/agents", `{"name":"x","systemPrompt":"y"}`},
+		{http.MethodPut, "/api/tutor/agents/1", `{"name":"x","systemPrompt":"y"}`},
+		{http.MethodDelete, "/api/tutor/agents/1", ``},
+		{http.MethodPut, "/api/tutor/agents/1/skills", `{"skillIds":[50]}`},
+		{http.MethodPut, "/api/tutor/agents/1/materials", `{"handoutIds":[100]}`},
+	} {
+		req = signedReq(t, api, testUser("studentA1"), tc.method, tc.path, strings.NewReader(tc.body))
+		rec = httptest.NewRecorder()
+		api.NewHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("学生 %s %s 期望 403，得到 %d", tc.method, tc.path, rec.Code)
+		}
 	}
 
 	// PUT 技能开关
@@ -640,13 +847,13 @@ func TestTutorStudentManagementForbidden(t *testing.T) {
 	}
 }
 
-// ---------- 教师配置生命周期 ----------
+// ---------- 教师技能库读取与开关生命周期（提示词已随智能体配置，不再在本接口读写） ----------
 
 func TestTutorTeacherConfigLifecycle(t *testing.T) {
 	store := newSrvTutorStore()
 	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, nil, nil)
 
-	// 初始 GET。
+	// 初始 GET：技能库视图。
 	req := signedReq(t, api, testUser("teacherA"), http.MethodGet, "/api/tutor/assistant", nil)
 	rec := httptest.NewRecorder()
 	api.NewHandler().ServeHTTP(rec, req)
@@ -655,27 +862,8 @@ func TestTutorTeacherConfigLifecycle(t *testing.T) {
 	}
 	var cfg assistantResponse
 	json.Unmarshal(rec.Body.Bytes(), &cfg)
-	if cfg.SystemPrompt != "你是一位严格的数学助教。" || len(cfg.Skills) != 1 ||
-		!cfg.Skills[0].Enabled || cfg.Skills[0].ID != 50 {
-		t.Fatalf("初始配置错误: %+v", cfg)
-	}
-
-	// 保存提示词。
-	req = signedReq(t, api, testUser("teacherA"), http.MethodPut,
-		"/api/tutor/assistant/prompt", strings.NewReader(`{"systemPrompt":"你是引导式助教"}`))
-	rec = httptest.NewRecorder()
-	api.NewHandler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("保存提示词期望 200，得到 %d: %s", rec.Code, rec.Body)
-	}
-
-	// 空提示词 → 400。
-	req = signedReq(t, api, testUser("teacherA"), http.MethodPut,
-		"/api/tutor/assistant/prompt", strings.NewReader(`{"systemPrompt":"  "}`))
-	rec = httptest.NewRecorder()
-	api.NewHandler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("空提示词期望 400，得到 %d", rec.Code)
+	if len(cfg.Skills) != 1 || !cfg.Skills[0].Enabled || cfg.Skills[0].ID != 50 {
+		t.Fatalf("初始技能库错误: %+v", cfg)
 	}
 
 	// 停用技能。
@@ -696,12 +884,12 @@ func TestTutorTeacherConfigLifecycle(t *testing.T) {
 		t.Fatalf("不存在技能期望 404，得到 %d", rec.Code)
 	}
 
-	// GET 验证全部持久化。
+	// GET 验证开关已持久化。
 	req = signedReq(t, api, testUser("teacherA"), http.MethodGet, "/api/tutor/assistant", nil)
 	rec = httptest.NewRecorder()
 	api.NewHandler().ServeHTTP(rec, req)
 	json.Unmarshal(rec.Body.Bytes(), &cfg)
-	if cfg.SystemPrompt != "你是引导式助教" || cfg.Skills[0].Enabled {
+	if cfg.Skills[0].Enabled {
 		t.Fatalf("更新未持久化: %+v", cfg)
 	}
 }
@@ -831,7 +1019,7 @@ func TestTutorSkillValidation400(t *testing.T) {
 
 func TestTutorPreMetaFailure503(t *testing.T) {
 	store := newSrvTutorStore()
-	convID, _ := store.CreateConversation(context.Background(), 1, 2, "会话")
+	convID, _ := store.CreateConversation(context.Background(), 1, 2, 1, "会话")
 	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, srvHits(), fmt.Errorf("embedding 失败"))
 
 	body, _ := json.Marshal(map[string]string{"question": "题目"})
@@ -855,7 +1043,7 @@ func TestTutorPreMetaFailure503(t *testing.T) {
 
 func TestTutorMidStreamErrorEvent(t *testing.T) {
 	store := newSrvTutorStore()
-	convID, _ := store.CreateConversation(context.Background(), 1, 2, "会话")
+	convID, _ := store.CreateConversation(context.Background(), 1, 2, 1, "会话")
 	stream := &srvFakeStreamLLM{deltas: []string{"半截"}, err: fmt.Errorf("upstream http://10.0.0.5:9999 超时")}
 	api, _ := newTutorTestAPI(store, stream, srvHits(), nil)
 
@@ -903,7 +1091,7 @@ func TestTutorRealClientCancelPersistsPartial(t *testing.T) {
 
 	client := loginJarClient(t, srv.URL, "studentA1", "a1-pw")
 	resp, _ := client.Post(srv.URL+"/api/tutor/conversations",
-		"application/json", strings.NewReader("{}"))
+		"application/json", strings.NewReader(`{"agentId":1}`))
 	var created createdConversationResponse
 	json.NewDecoder(resp.Body).Decode(&created)
 	resp.Body.Close()
@@ -956,5 +1144,239 @@ func TestTutorRealClientCancelPersistsPartial(t *testing.T) {
 	if a.Role != tutorpkg.RoleAssistant || a.Content != "部分" ||
 		len(a.Citations) != 1 || a.PromptUsed == "" || len(a.SkillsUsed) != 1 {
 		t.Fatalf("断连部分持久化错误: %+v", a)
+	}
+}
+
+// ---------- 智能体：创建会话必须带 agentId 且属本班 ----------
+
+func TestTutorCreateConversationAgentValidation(t *testing.T) {
+	store := newSrvTutorStore()
+	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, nil, nil)
+	path := "/api/tutor/conversations"
+
+	for _, tc := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{"缺少 agentId", `{}`, http.StatusBadRequest},
+		{"agentId 非正", `{"agentId":0}`, http.StatusBadRequest},
+		{"agentId 不存在", `{"agentId":999}`, http.StatusNotFound},
+		{"agentId 跨班（B 班智能体）", `{"agentId":2}`, http.StatusNotFound},
+	} {
+		req := signedReq(t, api, testUser("studentA1"), http.MethodPost, path, strings.NewReader(tc.body))
+		rec := httptest.NewRecorder()
+		api.NewHandler().ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Fatalf("%s 期望 %d，得到 %d: %s", tc.name, tc.want, rec.Code, rec.Body)
+		}
+	}
+
+	// 会话落库须携带 agentId。
+	req := signedReq(t, api, testUser("studentA1"), http.MethodPost, path, strings.NewReader(`{"agentId":1}`))
+	rec := httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	var got createdConversationResponse
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if c := store.convs[got.ID]; c == nil || c.AgentID != 1 {
+		t.Fatalf("会话应绑定 agentId=1: %+v", c)
+	}
+}
+
+// ---------- 智能体列表：教师含提示词与绑定，学生仅 id/name/updatedAt ----------
+
+func TestTutorListAgentsRoleCrop(t *testing.T) {
+	store := newSrvTutorStore()
+	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, nil, nil)
+
+	// 教师视图：class1 仅 agent 1；含 systemPrompt 与绑定清单。
+	req := signedReq(t, api, testUser("teacherA"), http.MethodGet, "/api/tutor/agents", nil)
+	rec := httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("教师列表期望 200，得到 %d", rec.Code)
+	}
+	var teacher []teacherAgentView
+	if err := json.Unmarshal(rec.Body.Bytes(), &teacher); err != nil {
+		t.Fatal(err)
+	}
+	if len(teacher) != 1 || teacher[0].ID != 1 || teacher[0].Name != "数学助教" ||
+		teacher[0].SystemPrompt != "你是一位严格的数学助教。" ||
+		len(teacher[0].SkillIDs) != 1 || teacher[0].SkillIDs[0] != 50 ||
+		len(teacher[0].HandoutIDs) != 1 || teacher[0].HandoutIDs[0] != 100 {
+		t.Fatalf("教师视图错误: %+v", teacher)
+	}
+
+	// 学生视图：不含提示词字段（原始 JSON 里不得出现 systemPrompt）。
+	req = signedReq(t, api, testUser("studentA1"), http.MethodGet, "/api/tutor/agents", nil)
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("学生列表期望 200，得到 %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "systemPrompt") ||
+		strings.Contains(rec.Body.String(), "skillIds") {
+		t.Fatalf("学生视图不得泄露提示词或绑定: %s", rec.Body)
+	}
+	var student []studentAgentView
+	json.Unmarshal(rec.Body.Bytes(), &student)
+	if len(student) != 1 || student[0].ID != 1 || student[0].Name != "数学助教" {
+		t.Fatalf("学生视图错误: %+v", student)
+	}
+}
+
+// ---------- 智能体增删改：201/200/400/404/409 ----------
+
+func TestTutorAgentCRUDLifecycle(t *testing.T) {
+	store := newSrvTutorStore()
+	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, nil, nil)
+
+	// 新建 201。
+	req := signedReq(t, api, testUser("teacherA"), http.MethodPost, "/api/tutor/agents",
+		strings.NewReader(`{"name":"几何助教","systemPrompt":"专注几何。"}`))
+	rec := httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("新建智能体期望 201，得到 %d: %s", rec.Code, rec.Body)
+	}
+	var created teacherAgentView
+	json.Unmarshal(rec.Body.Bytes(), &created)
+	if created.ID <= 0 || created.Name != "几何助教" || created.SystemPrompt != "专注几何。" {
+		t.Fatalf("新建字段错误: %+v", created)
+	}
+
+	// 名称/提示词校验 400。
+	for _, tc := range []struct{ name, body string }{
+		{"空名称", `{"name":"  ","systemPrompt":"x"}`},
+		{"名称超长", `{"name":"` + strings.Repeat("长", 121) + `","systemPrompt":"x"}`},
+		{"提示词超长", `{"name":"n","systemPrompt":"` + strings.Repeat("字", 2001) + `"}`},
+	} {
+		req = signedReq(t, api, testUser("teacherA"), http.MethodPost, "/api/tutor/agents",
+			strings.NewReader(tc.body))
+		rec = httptest.NewRecorder()
+		api.NewHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s 期望 400，得到 %d", tc.name, rec.Code)
+		}
+	}
+
+	// 同班重名 400。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodPost, "/api/tutor/agents",
+		strings.NewReader(`{"name":"几何助教","systemPrompt":"重复"}`))
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("重名期望 400，得到 %d", rec.Code)
+	}
+
+	// 更新 200。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodPut,
+		fmt.Sprintf("/api/tutor/agents/%d", created.ID),
+		strings.NewReader(`{"name":"几何助教2","systemPrompt":"更新提示词"}`))
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("更新智能体期望 200，得到 %d: %s", rec.Code, rec.Body)
+	}
+	var updated teacherAgentView
+	json.Unmarshal(rec.Body.Bytes(), &updated)
+	if updated.Name != "几何助教2" || updated.SystemPrompt != "更新提示词" {
+		t.Fatalf("更新未生效: %+v", updated)
+	}
+
+	// 更新不存在 → 404。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodPut, "/api/tutor/agents/999",
+		strings.NewReader(`{"name":"x","systemPrompt":"y"}`))
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("更新不存在期望 404，得到 %d", rec.Code)
+	}
+
+	// 删除 200。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodDelete,
+		fmt.Sprintf("/api/tutor/agents/%d", created.ID), nil)
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("删除智能体期望 200，得到 %d", rec.Code)
+	}
+
+	// 删除不存在 → 404。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodDelete, "/api/tutor/agents/999", nil)
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("删除不存在期望 404，得到 %d", rec.Code)
+	}
+}
+
+// 仍被会话引用的智能体删除 → 409。
+func TestTutorDeleteAgentInUse409(t *testing.T) {
+	store := newSrvTutorStore()
+	_, _ = store.CreateConversation(context.Background(), 1, 2, 1, "占用会话")
+	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, nil, nil)
+
+	req := signedReq(t, api, testUser("teacherA"), http.MethodDelete, "/api/tutor/agents/1", nil)
+	rec := httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("被引用智能体删除期望 409，得到 %d", rec.Code)
+	}
+}
+
+// ---------- 智能体绑定：技能/材料全量替换 + 越界 404 且不变更 ----------
+
+func TestTutorAgentBindings(t *testing.T) {
+	store := newSrvTutorStore()
+	api, _ := newTutorTestAPI(store, &srvFakeStreamLLM{}, nil, nil)
+
+	// 绑定技能 200。
+	req := signedReq(t, api, testUser("teacherA"), http.MethodPut, "/api/tutor/agents/1/skills",
+		strings.NewReader(`{"skillIds":[50]}`))
+	rec := httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("绑定技能期望 200，得到 %d: %s", rec.Code, rec.Body)
+	}
+
+	// 绑定不属本班的技能 → 404，且原绑定不变。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodPut, "/api/tutor/agents/1/skills",
+		strings.NewReader(`{"skillIds":[60]}`))
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("跨班技能期望 404，得到 %d", rec.Code)
+	}
+	ids, _ := store.AgentSkillIDs(context.Background(), 1)
+	if len(ids) != 1 || ids[0] != 50 {
+		t.Fatalf("失败绑定不应改变既有绑定: %+v", ids)
+	}
+
+	// 绑定材料 200。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodPut, "/api/tutor/agents/1/materials",
+		strings.NewReader(`{"handoutIds":[100]}`))
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("绑定材料期望 200，得到 %d", rec.Code)
+	}
+
+	// 绑定不属本班的材料 → 404。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodPut, "/api/tutor/agents/1/materials",
+		strings.NewReader(`{"handoutIds":[999]}`))
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("越界材料期望 404，得到 %d", rec.Code)
+	}
+
+	// 绑定到不存在的智能体 → 404。
+	req = signedReq(t, api, testUser("teacherA"), http.MethodPut, "/api/tutor/agents/999/skills",
+		strings.NewReader(`{"skillIds":[]}`))
+	rec = httptest.NewRecorder()
+	api.NewHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("不存在智能体绑定期望 404，得到 %d", rec.Code)
 	}
 }

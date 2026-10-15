@@ -12,6 +12,9 @@ backend/bin/
 # host data
 /data/
 
+# apitest HTML 报告（不提交）
+apitest/reports/
+
 # editor / os
 .DS_Store
 .idea/

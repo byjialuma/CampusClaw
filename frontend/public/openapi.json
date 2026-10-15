@@ -1,0 +1,1046 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "CampusClaw API",
+    "version": "1.0.0",
+    "description": "班级知识库与解题助手后端接口。\n\n## 认证方式\n\n除「登录」「健康检查」「票据下载」外，所有接口都需要 JWT：\n\n1. 调用 `POST /api/sessions` 取得 `accessToken`；\n2. 点击本页右上角 **Authorize**，填入 `accessToken`（不要加 `Bearer` 前缀，Swagger 会自动加）；\n3. 之后所有 Try it out 请求都会携带 `Authorization: Bearer <token>`。\n\n## 角色与隔离\n\n- 角色：`teacher`（教师）/ `student`（学生），写在 JWT 中；\n- 班级隔离在服务端强制生效：`class_id` 一律取自 JWT，客户端传了也会被忽略；\n- 学生调用教师接口返回 `403`；跨班访问资源返回 `403` 或 `404`（视资源类型，防止探测）。\n\n## 通用错误\n\n错误响应统一为 JSON：`{\"error\": \"错误文案\"}`。常见状态码：`400` 参数错误、`401` 未登录或票据无效、`403` 角色/班级越权、`404` 资源不存在、`409` 冲突、`410` 票据已失效、`503` 下游依赖不可用。"
+  },
+  "servers": [{ "url": "/", "description": "同源（经 Nginx 反代至后端）" }],
+  "tags": [
+    { "name": "系统", "description": "健康检查" },
+    { "name": "认证", "description": "登录、登出、当前用户" },
+    { "name": "班级", "description": "班级学生名单（仅教师）" },
+    { "name": "材料", "description": "讲义上传、列表、预览、下载" },
+    { "name": "检索与问答", "description": "本班知识库语义检索与知识问答" },
+    { "name": "解题助手", "description": "会话、流式回答与技能管理" },
+    { "name": "智能体", "description": "多智能体列表/新建/修改/删除，以及技能与材料的绑定（写操作仅教师）" },
+    { "name": "MCP 工具", "description": "MCP 服务器登记、连接与工具发现、断开，以及调用审计（仅教师）" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["系统"],
+        "summary": "健康检查（无需登录）",
+        "description": "MySQL 与向量库均可达才返回 200，任一不可达返回 503。",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "全部依赖正常",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" }, "example": { "status": "ok", "db": "up", "vector": "up" } } }
+          },
+          "503": {
+            "description": "存在不可用依赖",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" }, "example": { "status": "degraded", "db": "up", "vector": "down" } } }
+          }
+        }
+      }
+    },
+    "/api/sessions": {
+      "post": {
+        "tags": ["认证"],
+        "summary": "登录（无需登录）",
+        "description": "用户名密码换取 JWT accessToken。用户不存在与密码错误返回完全一致的 401。",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginRequest" },
+              "example": { "username": "teacherA", "password": "change_me_teacher_a" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "登录成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": {
+            "description": "用户名或密码错误",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "用户名或密码错误" } } }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["认证"],
+        "summary": "登出",
+        "description": "JWT 无状态，客户端丢弃 token 即可；服务端始终返回 204。",
+        "responses": { "204": { "description": "已登出（无响应体）" } }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "tags": ["认证"],
+        "summary": "当前用户信息",
+        "responses": {
+          "200": {
+            "description": "当前登录用户",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Me" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/class/students": {
+      "get": {
+        "tags": ["班级"],
+        "summary": "本班学生名单（仅教师）",
+        "description": "返回当前教师所属班级的全部学生，按加入时间升序。班级取自 JWT，学生调用返回 403。",
+        "responses": {
+          "200": {
+            "description": "学生列表（可能为空数组）",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Student" } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/materials": {
+      "get": {
+        "tags": ["材料"],
+        "summary": "本班材料列表",
+        "description": "仅返回当前用户所在班级的材料（服务端按 JWT 班级过滤）。",
+        "responses": {
+          "200": {
+            "description": "材料列表",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "materials": { "type": "array", "items": { "$ref": "#/components/schemas/Material" } } } }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["材料"],
+        "summary": "上传材料（仅教师）",
+        "description": "multipart 表单上传，文件字段名必须为 `file`。仅支持 txt / md / pdf，大小上限 64KB，扩展名与魔数双重校验。`class_id` 与上传人取自 JWT，忽略客户端声明。返回 201 后异步入向量索引队列。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": { "file": { "type": "string", "format": "binary", "description": "txt/md/pdf 文件，≤64KB" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "上传成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Material" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": {
+            "description": "学生无权限上传文件",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "学生无权限上传文件" } } }
+          }
+        }
+      }
+    },
+    "/api/materials/{id}/content": {
+      "get": {
+        "tags": ["材料"],
+        "summary": "读取材料内容（预览）",
+        "description": "返回文件原始内容（Content-Type 按文件类型），响应头 `X-File-Name` 为 URL 编码的原始文件名。跨班访问返回 403。",
+        "parameters": [{ "$ref": "#/components/parameters/MaterialId" }],
+        "responses": {
+          "200": { "description": "文件内容", "content": { "text/plain": {}, "text/markdown": {}, "application/pdf": {} } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/materials/{id}/download-ticket": {
+      "post": {
+        "tags": ["材料"],
+        "summary": "创建下载票据",
+        "description": "为本班材料创建一次性下载票据（60 秒有效期、单次有效）。",
+        "parameters": [{ "$ref": "#/components/parameters/MaterialId" }],
+        "responses": {
+          "200": {
+            "description": "票据创建成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ticket": { "type": "string", "example": "9f2c…64hex" },
+                    "fileName": { "type": "string", "example": "第三章讲义.pdf" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/download": {
+      "get": {
+        "tags": ["材料"],
+        "summary": "凭票据下载文件（无需登录）",
+        "description": "一次性票据消费：在事务内 `SELECT ... FOR UPDATE` 并标记已用。响应带 `Cache-Control: no-store`。票据缺失 → 401；已使用或过期（>60s）→ 410。",
+        "security": [],
+        "parameters": [
+          { "name": "ticket", "in": "query", "required": true, "schema": { "type": "string" }, "description": "下载票据（由 download-ticket 接口签发）" }
+        ],
+        "responses": {
+          "200": { "description": "文件流（application/octet-stream，Content-Disposition 附件）", "content": { "application/octet-stream": {} } },
+          "401": {
+            "description": "票据缺失",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "下载凭证缺失" } } }
+          },
+          "410": {
+            "description": "票据已使用或已过期",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "下载凭证已失效，请重新登录" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/search": {
+      "get": {
+        "tags": ["检索与问答"],
+        "summary": "本班知识库语义检索",
+        "description": "向量相似度召回，强制按 JWT 班级过滤，禁止跨班混合召回。",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string", "maxLength": 500 }, "description": "查询内容（1–500 字）" }
+        ],
+        "responses": {
+          "200": {
+            "description": "检索结果（按相关度降序）",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "$ref": "#/components/schemas/SearchResult" } } } }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/qa": {
+      "post": {
+        "tags": ["检索与问答"],
+        "summary": "知识问答",
+        "description": "基于本班材料回答问题并附引用。无切片命中时不调用 LLM，直接返回固定句「根据已有材料无法回答该问题」与空引用。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["question"],
+                "properties": { "question": { "type": "string", "maxLength": 500 } }
+              },
+              "example": { "question": "什么是闭包？" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "回答与引用",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QAResult" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/tutor/conversations": {
+      "post": {
+        "tags": ["解题助手"],
+        "summary": "新建解题会话",
+        "description": "会话必须显式绑定本班智能体：`agentId` 取自 `GET /api/tutor/agents`。跨班或不存在返回 404。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["agentId"], "properties": { "agentId": { "type": "integer", "minimum": 1 } } },
+              "example": { "agentId": 1 }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "会话创建成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "id": { "type": "integer", "example": 12 }, "title": { "type": "string", "example": "新的解题会话" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "get": {
+        "tags": ["解题助手"],
+        "summary": "我的会话列表（新→旧）",
+        "responses": {
+          "200": {
+            "description": "会话数组",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Conversation" } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/tutor/conversations/{id}/messages": {
+      "get": {
+        "tags": ["解题助手"],
+        "summary": "读取会话消息",
+        "description": "仅会话属主可读；他人（含其他班）会话一律 404。",
+        "parameters": [{ "$ref": "#/components/parameters/ConversationId" }],
+        "responses": {
+          "200": {
+            "description": "消息数组（assistant 消息可能带 citations / skillsUsed 快照）",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Message" } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "tags": ["解题助手"],
+        "summary": "提问（SSE 流式回答）",
+        "description": "以 Server-Sent Events 推送一轮回答。事件序列：`meta`（先于正文，载荷含 citations 引用、skills 本轮命中的技能快照、toolCalls 远端工具调用结果）→ 多个 `delta`（正文增量）→ `done`（含 messageId）或 `error`。\n\n路由与工具：本轮至多命中 1 条技能（候选集为「绑定到本会话智能体且已启用」的技能，按「适用条件」关键词在提问文本中的命中个数计分，取最高分、同分取技能 id 较小者，零命中则不选技能）。命中的技能若声明了 `工具：<name>@<server>`，服务端会在本轮调用对应 MCP 工具，结果作为数据拼入用户消息，调用状态记录在 `meta.toolCalls` 与「MCP 调用审计」中；工具调用失败不阻断回答。\n\n每行格式：`event: <类型>` + `data: <JSON>`。注意 Swagger UI 的 Try it out 无法逐帧渲染 SSE，会一次性展示全部事件流。",
+        "parameters": [{ "$ref": "#/components/parameters/ConversationId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["question"],
+                "properties": { "question": { "type": "string", "maxLength": 500 } }
+              },
+              "example": { "question": "这道题该从哪个公式入手？" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE 事件流（text/event-stream）",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string", "description": "event: meta/delta/done/error + data: JSON" },
+                "example": "event: meta\ndata: {\"citations\":[{\"documentId\":1,\"fileName\":\"讲义.md\",\"fileType\":\"md\",\"snippet\":\"...\",\"locator\":{\"kind\":\"heading\",\"path\":\"第 3 章\"},\"score\":0.83,\"index\":1}],\"skills\":[{\"id\":2,\"name\":\"一元二次\"}],\"toolCalls\":[{\"toolRef\":\"formula_hint@campus-tools\",\"serverName\":\"campus-tools\",\"status\":\"success\"}]}\n\nevent: delta\ndata: {\"text\":\"我们先回顾\"}\n\nevent: done\ndata: {\"messageId\":45}\n"
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/tutor/assistant": {
+      "get": {
+        "tags": ["解题助手"],
+        "summary": "本班技能库视图（仅教师）",
+        "description": "返回本班助手与其全部技能（含从正文解析出的工具引用）。提示词已随智能体配置，不再在此返回；技能需绑定到智能体才会参与提问路由。",
+        "responses": {
+          "200": {
+            "description": "助手配置与技能列表",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AssistantConfig" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/tutor/assistant/skills": {
+      "post": {
+        "tags": ["解题助手"],
+        "summary": "在线新建技能（仅教师）",
+        "description": "名称 1–120 字、内容 1–20000 字。新建后默认停用，需显式启用，并绑定到智能体后才会参与提问路由。\n\n正文可声明工具引用：单独一行 `工具：<tool>@<server>`（多条用 `,`/`，`/`、` 分隔；内置检索写 `knowledge_search`），以及可选一行 `适用条件：<关键词1>,<关键词2>`（关键词须是学生提问里会**字面出现**的词，否则该技能不会被命中）。保存时校验每条 MCP 引用的服务器在本班存在、已连接、且工具在其清单中，任一不满足返回 400。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "content"],
+                "properties": {
+                  "name": { "type": "string", "maxLength": 120 },
+                  "content": { "type": "string", "maxLength": 20000 }
+                }
+              },
+              "example": { "name": "公式回顾", "content": "回答前先回顾相关公式，再引导学生自行推导。" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "技能创建成功（默认停用）",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Skill" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/tutor/assistant/skills/upload": {
+      "post": {
+        "tags": ["解题助手"],
+        "summary": "上传技能文档（仅教师）",
+        "description": "multipart 表单，文件字段名 `file`，仅支持 .md / .txt，≤64KB，UTF-8。文件名去扩展名作为默认名称，可用表单字段 `name` 覆盖。\n\n文件正文中的「工具」/「适用条件」语法与 MCP 引用校验同 `POST /api/tutor/assistant/skills`。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary", "description": ".md/.txt 文件，≤64KB" },
+                  "name": { "type": "string", "description": "可选，覆盖默认技能名" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "技能创建成功（默认停用）",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Skill" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/tutor/assistant/skills/{id}": {
+      "put": {
+        "tags": ["解题助手"],
+        "summary": "启用/停用技能（仅教师）",
+        "description": "仅对本班技能生效；跨班技能一律 404。",
+        "parameters": [{ "$ref": "#/components/parameters/SkillId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["enabled"], "properties": { "enabled": { "type": "boolean" } } },
+              "example": { "enabled": true }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["解题助手"],
+        "summary": "删除技能（仅教师）",
+        "description": "内置解题引导技能禁止删除，返回 409；跨班技能返回 404。",
+        "parameters": [{ "$ref": "#/components/parameters/SkillId" }],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "内置技能不可删除",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "内置技能不可删除" } } }
+          }
+        }
+      }
+    },
+    "/api/tutor/agents": {
+      "get": {
+        "tags": ["智能体"],
+        "summary": "本班智能体列表（按角色裁剪）",
+        "description": "教师返回提示词与绑定的 skillIds/handoutIds；学生仅返回 id、name、updatedAt，用于选择会话绑定哪个智能体。",
+        "responses": {
+          "200": {
+            "description": "智能体数组",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Agent" } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["智能体"],
+        "summary": "新建智能体（仅教师）",
+        "description": "名称 1–120 字、提示词 1–2000 字；同班重名返回 400。新建后需再绑定技能/材料。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentSaveRequest" },
+              "example": { "name": "A班·解题助手", "systemPrompt": "你是耐心的解题引导者，只引导思路，不直接给出最终答案。" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Agent" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/tutor/agents/{id}": {
+      "put": {
+        "tags": ["智能体"],
+        "summary": "修改智能体（仅教师）",
+        "description": "仅可改名称与提示词。跨班或不存在返回 404；同班重名返回 400。",
+        "parameters": [{ "$ref": "#/components/parameters/AgentId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/AgentSaveRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Agent" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["智能体"],
+        "summary": "删除智能体（仅教师）",
+        "description": "跨班或不存在返回 404；仍被会话引用（外键 RESTRICT）时返回 409。",
+        "parameters": [{ "$ref": "#/components/parameters/AgentId" }],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "智能体仍被会话引用",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "智能体仍被会话引用，无法删除" } } }
+          }
+        }
+      }
+    },
+    "/api/tutor/agents/{id}/skills": {
+      "put": {
+        "tags": ["智能体"],
+        "summary": "替换智能体绑定的技能（仅教师）",
+        "description": "**全量替换**：提交的 `skillIds` 即该智能体最终绑定的集合，空数组表示清空。技能必须属于本班且已启用，否则 400；会影响提问时的技能候选集，请连同原有技能一起提交，避免误删绑定。",
+        "parameters": [{ "$ref": "#/components/parameters/AgentId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentSkillBindingRequest" },
+              "example": { "skillIds": [1, 2] }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "替换成功（返回更新后的智能体视图）",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Agent" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/tutor/agents/{id}/materials": {
+      "put": {
+        "tags": ["智能体"],
+        "summary": "替换智能体绑定的参考材料（仅教师）",
+        "description": "**全量替换**：提交的 `handoutIds` 即最终绑定的材料集合，空数组表示清空。材料必须属于本班，否则 400。绑定的材料构成该智能体提问时的检索范围（空绑定则不做向量检索，直接按提示词作答）。",
+        "parameters": [{ "$ref": "#/components/parameters/AgentId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentMaterialBindingRequest" },
+              "example": { "handoutIds": [1, 2] }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "替换成功（返回更新后的智能体视图）",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Agent" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/tutor/mcp/servers": {
+      "get": {
+        "tags": ["MCP 工具"],
+        "summary": "本班 MCP 服务器列表（仅教师）",
+        "description": "响应**绝不回传令牌明文**，只回 `hasAuth` 布尔；`tools` 为上次连接（`tools/list`）缓存到的工具清单。",
+        "responses": {
+          "200": {
+            "description": "服务器数组",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/MCPServer" } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "post": {
+        "tags": ["MCP 工具"],
+        "summary": "登记 MCP 服务器（仅教师）",
+        "description": "名称须以小写字母开头、仅含小写字母/数字/下划线/连字符，本班内唯一，重名返回 400；`baseUrl` 须为合法 http(s) 地址。`authToken` 为 Bearer 令牌，只存服务端。登记后需再调用 connect 才会发现工具。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MCPServerSaveRequest" },
+              "example": { "name": "campus-tools", "baseUrl": "http://mcp-demo:8090", "authToken": "<Bearer 令牌>" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "登记成功（未连接）",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MCPServer" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/tutor/mcp/servers/{id}": {
+      "put": {
+        "tags": ["MCP 工具"],
+        "summary": "修改 MCP 服务器（仅教师）",
+        "description": "跨班或不存在返回 404；同班重名返回 400。`authToken` 缺省或为 null 时保留原令牌，给定值则覆盖。",
+        "parameters": [{ "$ref": "#/components/parameters/MCPServerId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/MCPServerSaveRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MCPServer" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["MCP 工具"],
+        "summary": "删除 MCP 服务器（仅教师）",
+        "description": "跨班或不存在返回 404。删除后历史审计仍保留 `serverName` 快照（`serverId` 置空）。",
+        "parameters": [{ "$ref": "#/components/parameters/MCPServerId" }],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/tutor/mcp/servers/{id}/connect": {
+      "post": {
+        "tags": ["MCP 工具"],
+        "summary": "连接并发现工具（仅教师）",
+        "description": "对本班服务器发起 JSON-RPC `initialize` 握手与 `tools/list`，成功后返回 `connected: true` 与最新 `tools` 清单，并写入缓存；**这是「列出工具」的入口**。\n\n连接失败（不可达、握手或 tools/list 出错）返回 502，同时保持 `connected: false`、清空工具缓存并记录 `lastError`。技能正文引用某 MCP 工具时，必须先完成本步，否则保存技能会被 400 拒绝。",
+        "parameters": [{ "$ref": "#/components/parameters/MCPServerId" }],
+        "responses": {
+          "200": {
+            "description": "连接成功且工具清单已缓存",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MCPServer" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "502": {
+            "description": "连接失败（服务不可达或握手/工具发现失败）",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "连接 MCP 服务器失败" } } }
+          }
+        }
+      }
+    },
+    "/api/tutor/mcp/servers/{id}/disconnect": {
+      "post": {
+        "tags": ["MCP 工具"],
+        "summary": "断开 MCP 服务器（仅教师）",
+        "description": "仅把本班该服务器标记为未连接，不改动令牌与名称。跨班或不存在返回 404。断开后引用其工具的技能在提问时不会被调用（审计记为 denied）。",
+        "parameters": [{ "$ref": "#/components/parameters/MCPServerId" }],
+        "responses": {
+          "200": {
+            "description": "已断开",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MCPServer" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/tutor/mcp/calls": {
+      "get": {
+        "tags": ["MCP 工具"],
+        "summary": "MCP 工具调用审计（仅教师）",
+        "description": "返回本班最近 50 条调用记录，含 `toolRef`（`tool@server`）、`status`（success / denied / error）、`username`（发起提问用户快照）与 `createdAt`。班级隔离在服务端强制生效，跨班记录不会返回；学生调用返回 403。",
+        "responses": {
+          "200": {
+            "description": "审计记录数组（新→旧）",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/MCPCall" } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "POST /api/sessions 返回的 accessToken"
+      }
+    },
+    "parameters": {
+      "MaterialId": { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 }, "description": "材料 ID" },
+      "ConversationId": { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 }, "description": "会话 ID" },
+      "SkillId": { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 }, "description": "技能 ID" },
+      "AgentId": { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 }, "description": "智能体 ID" },
+      "MCPServerId": { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 }, "description": "MCP 服务器 ID" }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "参数错误",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "请求格式错误" } } }
+      },
+      "Unauthorized": {
+        "description": "未登录或会话已失效",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "未登录或会话已失效" } } }
+      },
+      "Forbidden": {
+        "description": "角色或班级越权",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "无权访问该资源" } } }
+      },
+      "NotFound": {
+        "description": "资源不存在（含跨班防探测）",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "资源不存在" } } }
+      },
+      "ServiceUnavailable": {
+        "description": "下游依赖暂不可用",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "服务暂不可用" } } }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": { "error": { "type": "string" } },
+        "required": ["error"]
+      },
+      "Ok": {
+        "type": "object",
+        "properties": { "ok": { "type": "boolean", "example": true } }
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "enum": ["ok", "degraded"] },
+          "db": { "type": "string", "enum": ["up", "down"] },
+          "vector": { "type": "string", "enum": ["up", "down"] }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["username", "password"],
+        "properties": {
+          "username": { "type": "string" },
+          "password": { "type": "string", "format": "password" }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "user": { "$ref": "#/components/schemas/Me" },
+          "accessToken": { "type": "string", "description": "JWT，填入右上角 Authorize" },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Me": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "example": 1 },
+          "username": { "type": "string", "example": "teacherA" },
+          "displayName": { "type": "string", "example": "教师A" },
+          "role": { "type": "string", "enum": ["teacher", "student"] },
+          "classId": { "type": "integer", "example": 1 },
+          "className": { "type": "string", "example": "软件工程 1 班" }
+        }
+      },
+      "Student": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "example": 2 },
+          "username": { "type": "string", "example": "studentA1" },
+          "displayName": { "type": "string", "example": "学生A1" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Material": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "example": 1 },
+          "name": { "type": "string", "example": "第三章讲义.pdf" },
+          "fileType": { "type": "string", "enum": ["txt", "md", "pdf"] },
+          "sizeBytes": { "type": "integer", "example": 20480 },
+          "uploaderName": { "type": "string", "example": "教师A" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "indexStatus": { "type": "string", "enum": ["pending", "indexed", "failed"], "description": "向量索引状态" }
+        }
+      },
+      "Locator": {
+        "type": "object",
+        "description": "分片在原文档中的位置：PDF 用 page、Markdown 用 path（章节路径）、TXT 用 startLine/endLine",
+        "properties": {
+          "kind": { "type": "string", "enum": ["page", "heading", "lines"] },
+          "page": { "type": "integer", "example": 3 },
+          "path": { "type": "string", "example": "第 3 章 / 3.2 节" },
+          "startLine": { "type": "integer", "example": 40 },
+          "endLine": { "type": "integer", "example": 52 }
+        }
+      },
+      "SearchResult": {
+        "type": "object",
+        "properties": {
+          "documentId": { "type": "integer" },
+          "chunkId": { "type": "string" },
+          "fileName": { "type": "string" },
+          "fileType": { "type": "string" },
+          "snippet": { "type": "string", "description": "命中分片文本" },
+          "score": { "type": "number", "format": "float" },
+          "locator": { "$ref": "#/components/schemas/Locator" }
+        }
+      },
+      "Citation": {
+        "type": "object",
+        "properties": {
+          "documentId": { "type": "integer" },
+          "fileName": { "type": "string" },
+          "fileType": { "type": "string" },
+          "snippet": { "type": "string" },
+          "locator": { "$ref": "#/components/schemas/Locator" },
+          "score": { "type": "number", "format": "float" }
+        }
+      },
+      "QAResult": {
+        "type": "object",
+        "properties": {
+          "answer": { "type": "string" },
+          "citations": { "type": "array", "items": { "$ref": "#/components/schemas/Citation" } }
+        }
+      },
+      "Conversation": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "title": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "SkillRef": {
+        "type": "object",
+        "description": "某轮回答启用技能的快照（技能被删除后历史仍可展示名称）",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" }
+        }
+      },
+      "Message": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "conversationId": { "type": "integer" },
+          "role": { "type": "string", "enum": ["user", "assistant"] },
+          "content": { "type": "string" },
+          "citations": { "type": "array", "items": { "$ref": "#/components/schemas/Citation" } },
+          "skillsUsed": { "type": "array", "items": { "$ref": "#/components/schemas/SkillRef" } },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Skill": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "content": { "type": "string" },
+          "source": { "type": "string", "enum": ["seed", "upload", "online"], "description": "seed=内置 / upload=上传 / online=自建" },
+          "builtin": { "type": "boolean", "description": "内置技能禁止删除" },
+          "enabled": { "type": "boolean" }
+        }
+      },
+      "AssistantConfig": {
+        "type": "object",
+        "description": "本班技能库视图（仅教师）；提示词已随智能体配置，不在此返回。",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string", "example": "A班·解题助手" },
+          "skills": { "type": "array", "items": { "$ref": "#/components/schemas/SkillView" } }
+        }
+      },
+      "SkillView": {
+        "allOf": [{ "$ref": "#/components/schemas/Skill" }],
+        "description": "技能 + 从正文解析出的工具引用（供界面展示）",
+        "properties": { "tools": { "type": "array", "items": { "$ref": "#/components/schemas/ToolRef" } } }
+      },
+      "ToolRef": {
+        "type": "object",
+        "description": "技能正文声明的一条工具引用",
+        "properties": {
+          "raw": { "type": "string", "example": "formula_hint@campus-tools" },
+          "name": { "type": "string", "example": "formula_hint", "description": "工具名，小写字母开头，仅含小写字母、数字与下划线" },
+          "server": { "type": "string", "example": "campus-tools", "description": "服务器名；内置引用时为空" },
+          "builtin": { "type": "boolean", "description": "是否为内置引用 knowledge_search" }
+        }
+      },
+      "Agent": {
+        "type": "object",
+        "description": "教师视图含 systemPrompt/skillIds/handoutIds；学生视图仅有 id/name/updatedAt。",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" },
+          "systemPrompt": { "type": "string" },
+          "skillIds": { "type": "array", "items": { "type": "integer" }, "description": "绑定的技能 ID（教师视图）" },
+          "handoutIds": { "type": "array", "items": { "type": "integer" }, "description": "绑定的材料 ID（教师视图）" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "name"]
+      },
+      "AgentSaveRequest": {
+        "type": "object",
+        "required": ["name", "systemPrompt"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 120 },
+          "systemPrompt": { "type": "string", "maxLength": 2000 }
+        }
+      },
+      "AgentSkillBindingRequest": {
+        "type": "object",
+        "required": ["skillIds"],
+        "properties": {
+          "skillIds": { "type": "array", "items": { "type": "integer" }, "description": "最终绑定的技能集合；空数组表示清空" }
+        }
+      },
+      "AgentMaterialBindingRequest": {
+        "type": "object",
+        "required": ["handoutIds"],
+        "properties": {
+          "handoutIds": { "type": "array", "items": { "type": "integer" }, "description": "最终绑定的材料集合；空数组表示清空" }
+        }
+      },
+      "MCPTool": {
+        "type": "object",
+        "description": "连接时由 tools/list 发现的工具条目",
+        "properties": {
+          "name": { "type": "string", "example": "formula_hint", "description": "工具名：小写字母开头，仅含小写字母、数字与下划线" },
+          "description": { "type": "string" },
+          "inputSchema": { "type": "object", "description": "JSON Schema 形式的入参定义" }
+        },
+        "required": ["name"]
+      },
+      "MCPServer": {
+        "type": "object",
+        "description": "响应绝不含 authToken 明文，仅回 hasAuth 布尔。",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string", "example": "campus-tools", "description": "小写字母开头，仅含小写字母/数字/下划线/连字符；本班内唯一" },
+          "baseUrl": { "type": "string", "format": "uri", "example": "http://mcp-demo:8090" },
+          "hasAuth": { "type": "boolean", "description": "是否已配置 Bearer 令牌（不回传明文）" },
+          "connected": { "type": "boolean" },
+          "tools": { "type": "array", "items": { "$ref": "#/components/schemas/MCPTool" }, "description": "上次 tools/list 缓存到的工具清单" },
+          "lastError": { "type": "string", "description": "最近一次连接失败原因" }
+        },
+        "required": ["id", "name", "baseUrl", "hasAuth", "connected"]
+      },
+      "MCPServerSaveRequest": {
+        "type": "object",
+        "required": ["name", "baseUrl"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 120 },
+          "baseUrl": { "type": "string", "format": "uri", "maxLength": 512 },
+          "authToken": { "type": "string", "description": "Bearer 令牌，仅存服务端；更新时缺省或 null 表示保留原令牌" }
+        }
+      },
+      "MCPCall": {
+        "type": "object",
+        "description": "一次远端工具调用尝试的审计记录",
+        "properties": {
+          "id": { "type": "integer" },
+          "serverId": { "type": "integer", "nullable": true },
+          "serverName": { "type": "string", "example": "campus-tools", "description": "写入时的服务器名快照" },
+          "toolRef": { "type": "string", "example": "formula_hint@campus-tools" },
+          "status": { "type": "string", "enum": ["success", "denied", "error"] },
+          "error": { "type": "string" },
+          "durationMs": { "type": "integer" },
+          "userId": { "type": "integer", "nullable": true },
+          "username": { "type": "string", "description": "发起提问的用户名快照" },
+          "conversationId": { "type": "integer", "nullable": true },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  },
+  "security": [{ "bearerAuth": [] }]
+}

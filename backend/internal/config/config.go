@@ -22,6 +22,7 @@ type Config struct {
 	Embedding EmbeddingConfig
 	Qdrant    QdrantConfig
 	LLM       LLMConfig
+	MCP       MCPConfig
 
 	SeedTeacherA  SeedAccount
 	SeedStudentA1 SeedAccount
@@ -50,9 +51,11 @@ type EmbeddingConfig struct {
 }
 
 // QdrantConfig 是向量库连接与检索参数。
+// MinScore 是相似度下限（SEARCH_MIN_SCORE，取值区间 [0,1]）：低于该值的召回分片不作为回答依据。
 type QdrantConfig struct {
-	URL  string
-	TopK int
+	URL      string
+	TopK     int
+	MinScore float64
 }
 
 // LLMConfig 是 Chat Completions 端点参数。
@@ -61,6 +64,13 @@ type LLMConfig struct {
 	APIKey  string
 	Model   string
 	Timeout time.Duration
+}
+
+// MCPConfig 是主机侧（CampusClaw）调用自建 MCP 工具服务的参数。
+// AuthToken 仅用于播种预置服务器，可为空（为空时只写无令牌的服务器行）。
+type MCPConfig struct {
+	AuthToken string
+	Timeout   time.Duration
 }
 
 // MySQLConfig 是数据库连接参数。
@@ -99,6 +109,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	mcp, err := loadMCPConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		HTTPAddr: getenv("HTTP_ADDR", ":8080"),
 		MySQL: MySQLConfig{
@@ -117,6 +132,7 @@ func Load() (*Config, error) {
 		Embedding: emb,
 		Qdrant:    qdr,
 		LLM:       llm,
+		MCP:       mcp,
 		SeedTeacherA: SeedAccount{
 			Username: req("SEED_TEACHER_A_USERNAME"),
 			Password: req("SEED_TEACHER_A_PASSWORD"),
@@ -161,15 +177,39 @@ func loadLLMConfig(req func(string) string) (LLMConfig, error) {
 	return llm, nil
 }
 
+// loadMCPConfig 加载主机侧 MCP 调用参数：令牌可空，超时不得低于 1 秒，非法值报错。
+func loadMCPConfig() (MCPConfig, error) {
+	cfg := MCPConfig{AuthToken: os.Getenv("MCP_AUTH_TOKEN")}
+	raw := os.Getenv("MCP_TIMEOUT_SECONDS")
+	if raw == "" {
+		cfg.Timeout = 10 * time.Second
+		return cfg, nil
+	}
+	sec, err := strconv.Atoi(raw)
+	if err != nil {
+		return MCPConfig{}, fmt.Errorf("MCP_TIMEOUT_SECONDS 必须是整数，当前为 %q", raw)
+	}
+	if sec < 1 {
+		return MCPConfig{}, fmt.Errorf("MCP_TIMEOUT_SECONDS 必须至少 1，当前为 %d", sec)
+	}
+	cfg.Timeout = time.Duration(sec) * time.Second
+	return cfg, nil
+}
+
 // loadSearchConfig 校验向量检索相关环境变量。
 func loadSearchConfig(req func(string) string) (EmbeddingConfig, QdrantConfig, error) {
 	provider := req("EMBEDDING_PROVIDER")
 	qdr := QdrantConfig{
-		URL:  req("QDRANT_URL"),
-		TopK: getenvInt("SEARCH_TOP_K", 5),
+		URL:      req("QDRANT_URL"),
+		TopK:     getenvInt("SEARCH_TOP_K", 5),
+		MinScore: getenvFloat("SEARCH_MIN_SCORE", 0.0),
 	}
 	if qdr.TopK < 1 || qdr.TopK > 10 {
 		return EmbeddingConfig{}, QdrantConfig{}, fmt.Errorf("SEARCH_TOP_K 必须在 1-10 之间，当前为 %d", qdr.TopK)
+	}
+	// 阈值越界或非法一律回落到默认 0.0，不阻断启动（默认等价于「仅丢弃 Score <= 0」，向后兼容）。
+	if qdr.MinScore < 0 || qdr.MinScore > 1 {
+		qdr.MinScore = 0.0
 	}
 
 	dimRaw := req("EMBEDDING_DIM")
@@ -203,6 +243,15 @@ func getenv(key, def string) string {
 func getenvInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func getenvFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
 			return n
 		}
 	}

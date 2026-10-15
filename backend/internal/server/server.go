@@ -87,6 +87,9 @@ type API struct {
 	QASvc         qaService
 	Tutor         tutorAsker
 	TutorStore    tutorStore
+	MCPStore      mcpStore
+	MCPDial       MCPDialer
+	MCPTimeout    time.Duration
 }
 
 // NewHandler 构建路由树：鉴权在各路由上显式包装。
@@ -111,11 +114,27 @@ func (a *API) NewHandler() http.Handler {
 	mux.HandleFunc("GET /api/tutor/conversations/{id}/messages", a.requireAuth(a.getTutorMessages))
 	mux.HandleFunc("POST /api/tutor/conversations/{id}/messages", a.requireAuth(a.askTutor))
 	mux.HandleFunc("GET /api/tutor/assistant", a.requireAuth(a.requireTeacher(a.getTutorAssistant)))
-	mux.HandleFunc("PUT /api/tutor/assistant/prompt", a.requireAuth(a.requireTeacher(a.saveTutorPrompt)))
 	mux.HandleFunc("PUT /api/tutor/assistant/skills/{id}", a.requireAuth(a.requireTeacher(a.putTutorSkill)))
 	mux.HandleFunc("POST /api/tutor/assistant/skills", a.requireAuth(a.requireTeacher(a.createTutorSkill)))
 	mux.HandleFunc("POST /api/tutor/assistant/skills/upload", a.requireAuth(a.requireTeacher(a.uploadTutorSkill)))
 	mux.HandleFunc("DELETE /api/tutor/assistant/skills/{id}", a.requireAuth(a.requireTeacher(a.deleteTutorSkill)))
+
+	// 智能体管理：列表登录即可（按角色裁剪），增删改与绑定仅教师；班级取自 JWT claims。
+	mux.HandleFunc("GET /api/tutor/agents", a.requireAuth(a.listTutorAgents))
+	mux.HandleFunc("POST /api/tutor/agents", a.requireAuth(a.requireTeacher(a.createTutorAgent)))
+	mux.HandleFunc("PUT /api/tutor/agents/{id}", a.requireAuth(a.requireTeacher(a.updateTutorAgent)))
+	mux.HandleFunc("DELETE /api/tutor/agents/{id}", a.requireAuth(a.requireTeacher(a.deleteTutorAgent)))
+	mux.HandleFunc("PUT /api/tutor/agents/{id}/skills", a.requireAuth(a.requireTeacher(a.putAgentSkills)))
+	mux.HandleFunc("PUT /api/tutor/agents/{id}/materials", a.requireAuth(a.requireTeacher(a.putAgentMaterials)))
+
+	// MCP 服务器管理与调用审计：仅教师可访问，班级取自 JWT claims。
+	mux.HandleFunc("GET /api/tutor/mcp/servers", a.requireAuth(a.requireTeacher(a.listMCPServers)))
+	mux.HandleFunc("POST /api/tutor/mcp/servers", a.requireAuth(a.requireTeacher(a.createMCPServer)))
+	mux.HandleFunc("PUT /api/tutor/mcp/servers/{id}", a.requireAuth(a.requireTeacher(a.updateMCPServer)))
+	mux.HandleFunc("DELETE /api/tutor/mcp/servers/{id}", a.requireAuth(a.requireTeacher(a.deleteMCPServer)))
+	mux.HandleFunc("POST /api/tutor/mcp/servers/{id}/connect", a.requireAuth(a.requireTeacher(a.connectMCPServer)))
+	mux.HandleFunc("POST /api/tutor/mcp/servers/{id}/disconnect", a.requireAuth(a.requireTeacher(a.disconnectMCPServer)))
+	mux.HandleFunc("GET /api/tutor/mcp/calls", a.requireAuth(a.requireTeacher(a.listMCPCalls)))
 
 	mux.HandleFunc("GET /api/materials", a.requireAuth(a.listMaterials))
 	mux.HandleFunc("POST /api/materials", a.requireAuth(a.requireTeacher(a.uploadMaterial)))

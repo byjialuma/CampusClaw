@@ -109,6 +109,43 @@ func TestLoad_TopKRange(t *testing.T) {
 	}
 }
 
+// SEARCH_MIN_SCORE：默认 0.0，合法值载入，越界/非法回落到默认值。
+func TestLoad_SearchMinScore(t *testing.T) {
+	setBaseEnv(t)
+	t.Setenv("EMBEDDING_PROVIDER", "stub")
+	t.Setenv("EMBEDDING_DIM", "256")
+
+	// 未设置：默认 0.0。
+	t.Setenv("SEARCH_MIN_SCORE", "")
+	if cfg, err := Load(); err != nil || cfg.Qdrant.MinScore != 0.0 {
+		t.Fatalf("SEARCH_MIN_SCORE 默认应为 0.0，得到 cfg=%v err=%v", cfg, err)
+	}
+
+	// 合法值：0.65 载入。
+	t.Setenv("SEARCH_MIN_SCORE", "0.65")
+	if cfg, err := Load(); err != nil || cfg.Qdrant.MinScore != 0.65 {
+		t.Fatalf("SEARCH_MIN_SCORE=0.65 应载入，得到 cfg=%v err=%v", cfg, err)
+	}
+
+	// 边界值 1.0 合法。
+	t.Setenv("SEARCH_MIN_SCORE", "1")
+	if cfg, err := Load(); err != nil || cfg.Qdrant.MinScore != 1.0 {
+		t.Fatalf("SEARCH_MIN_SCORE=1 应载入，得到 cfg=%v err=%v", cfg, err)
+	}
+
+	// 越界与非法一律回落 0.0，且不阻断启动。
+	for _, v := range []string{"-0.1", "1.5", "abc"} {
+		t.Setenv("SEARCH_MIN_SCORE", v)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("SEARCH_MIN_SCORE=%q 不应阻断启动: %v", v, err)
+		}
+		if cfg.Qdrant.MinScore != 0.0 {
+			t.Fatalf("SEARCH_MIN_SCORE=%q 应回落 0.0，得到 %v", v, cfg.Qdrant.MinScore)
+		}
+	}
+}
+
 func TestLoad_MissingCoreVarsReported(t *testing.T) {
 	// 完全不设任何变量：必须返回列明缺项的错误。
 	t.Setenv("MYSQL_USER", "")

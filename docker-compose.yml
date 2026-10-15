@@ -37,6 +37,24 @@ services:
       retries: 24
     restart: unless-stopped
 
+  mcp-demo:
+    # 自建 MCP 工具服务：仅接入内部网络，不发布宿主机端口，令牌只从环境变量注入。
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: campusclaw-mcp
+    environment:
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
+      MCP_PORT: "8090"
+    networks:
+      - ccnet
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8090/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    restart: unless-stopped
+
   backend:
     build:
       context: .
@@ -63,10 +81,15 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-2048}
       SEARCH_TOP_K: ${SEARCH_TOP_K:-5}
+      # 相似度下限：低于该值的召回分片不作为回答依据（默认 0.0 等价「仅丢弃 Score <= 0」）。
+      SEARCH_MIN_SCORE: ${SEARCH_MIN_SCORE:-0.0}
       LLM_BASE_URL: ${LLM_BASE_URL}
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_MODEL: ${LLM_MODEL}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
+      # MCP：令牌仅用于播种预置服务器；调用超时（秒）。
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
+      MCP_TIMEOUT_SECONDS: ${MCP_TIMEOUT_SECONDS:-10}
     volumes:
       - materials-data:/app/data
     networks:

@@ -19,6 +19,32 @@ const SKILL_FILE_MAX_BYTES = 64 * 1024
 const SKILL_CONTENT_MAX = 20000
 const SKILL_NAME_MAX = 120
 
+// 技能正文「工具」行解析出的一条引用。
+interface ParsedToolRef {
+  raw: string
+  builtin: boolean
+}
+
+// parseSkillTools 在前端按与后端相同的「工具」行语法解析：行首「工具：」/「工具:」，
+// 值以半角逗号、全角逗号或顿号分隔；knowledge_search 为内置引用。
+function parseSkillTools(content: string): ParsedToolRef[] {
+  const refs: ParsedToolRef[] = []
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim()
+    let value = ''
+    if (line.startsWith('工具：') || line.startsWith('工具:')) {
+      value = line.slice(3)
+    } else {
+      continue
+    }
+    for (const item of value.split(/[,，、]/)) {
+      const ref = item.trim()
+      if (ref) refs.push({ raw: ref, builtin: ref === 'knowledge_search' })
+    }
+  }
+  return refs
+}
+
 // SkillManagement 是教师「技能管理」标签页：技能列表 + 上传 + 在线新建 + 删除 + 启停。
 // 与 AssistantSettings 共享同一份配置（双方都会拉取最新数据），不通过 props 同步——
 // 教师在两页间切换时各自重新拉取，避免跨页状态漂移。
@@ -142,44 +168,61 @@ export default function SkillManagement() {
         <p className="settings-label">
           技能列表（开启后内容会逐条注入助手指令；内置「解题引导」可停用不可删除）
         </p>
-        {cfg?.skills.map((sk: TutorSkill) => (
-          <div key={sk.id} className="skill-toggle-row">
-            <span className="skill-info">
-              <span className="skill-name-row">
-                <span className="skill-name">{sk.name}</span>
-                <span className={`skill-source src-${sk.source}`}>
-                  {SOURCE_LABEL[sk.source] ?? sk.source}
+        {cfg?.skills.map((sk: TutorSkill) => {
+          const toolRefs = parseSkillTools(sk.content)
+          return (
+            <div key={sk.id} className="skill-toggle-row">
+              <span className="skill-info">
+                <span className="skill-name-row">
+                  <span className="skill-name">{sk.name}</span>
+                  <span className={`skill-source src-${sk.source}`}>
+                    {SOURCE_LABEL[sk.source] ?? sk.source}
+                  </span>
                 </span>
+                {sk.description && <span className="muted skill-desc">{sk.description}</span>}
+                {toolRefs.length > 0 && (
+                  <span className="skill-tool-refs">
+                    <span className="muted">工具引用：</span>
+                    {toolRefs.map((r) => (
+                      <span
+                        key={r.raw}
+                        className={`skill-tool-chip${r.builtin ? ' builtin' : ''}`}
+                        title={r.builtin ? '内置引用（本班知识库检索）' : '远端 MCP 工具引用'}
+                      >
+                        {r.raw}
+                      </span>
+                    ))}
+                  </span>
+                )}
+                {sk.content && (
+                  <details className="skill-content-detail">
+                    <summary>查看内容</summary>
+                    <pre className="skill-content-view">{sk.content}</pre>
+                  </details>
+                )}
               </span>
-              {sk.description && <span className="muted skill-desc">{sk.description}</span>}
-              {sk.content && (
-                <details className="skill-content-detail">
-                  <summary>查看内容</summary>
-                  <pre className="skill-content-view">{sk.content}</pre>
-                </details>
-              )}
-            </span>
-            <input
-              type="checkbox"
-              className="skill-switch"
-              checked={sk.enabled}
-              disabled={busySkill !== null}
-              onChange={(e) => onToggleSkill(sk.id, e.target.checked)}
-            />
-            <span className={`skill-state${sk.enabled ? ' on' : ''}`}>
-              {sk.enabled ? '已开启' : '已停用'}
-            </span>
-            <button
-              type="button"
-              className="btn btn-small skill-delete"
-              disabled={sk.builtin || busySkill !== null}
-              title={sk.builtin ? '内置技能不可删除' : '删除该技能'}
-              onClick={() => onDeleteSkill(sk.id, sk.name)}
-            >
-              删除
-            </button>
-          </div>
-        ))}
+              <input
+                type="checkbox"
+                className="skill-switch"
+                checked={sk.enabled}
+                disabled={busySkill !== null}
+                onChange={(e) => onToggleSkill(sk.id, e.target.checked)}
+              />
+              <span className={`skill-state${sk.enabled ? ' on' : ''}`}>
+                {sk.enabled ? '已开启' : '已停用'}
+              </span>
+              <button
+                type="button"
+                className="btn btn-small skill-delete"
+                disabled={sk.builtin || busySkill !== null}
+                title={sk.builtin ? '内置技能不可删除' : '删除该技能'}
+                onClick={() => onDeleteSkill(sk.id, sk.name)}
+              >
+                删除
+              </button>
+            </div>
+          )
+        })}
 
         <div className="skill-add-row">
           <input

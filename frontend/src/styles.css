@@ -789,6 +789,161 @@ body {
   box-shadow: 0 0 0 2px rgba(148, 7, 10, 0.12);
 }
 
+/* ---------- 技能工具引用（技能管理标签页） ---------- */
+
+.skill-tool-refs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.skill-tool-chip {
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--pku-red-border);
+  background: var(--pku-red-light);
+  color: var(--pku-red-dark);
+}
+.skill-tool-chip.builtin {
+  border-color: var(--card-border);
+  background: #f4f4f5;
+  color: var(--ink-soft);
+}
+
+/* ---------- 教师助手设置：MCP 服务器管理区 ---------- */
+
+.settings-mcp {
+  margin-top: 18px;
+  border-top: 1px solid var(--card-border);
+  padding-top: 14px;
+}
+.mcp-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mcp-section-head .settings-label {
+  margin: 0;
+}
+.mcp-section-head .settings-actions {
+  margin-top: 0;
+  flex: none;
+}
+.mcp-server-form {
+  margin-top: 10px;
+  border: 1px dashed var(--card-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mcp-server-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-top: 8px;
+}
+.mcp-server-url {
+  word-break: break-all;
+}
+.mcp-badge {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--card-border);
+  background: #f4f4f5;
+  color: var(--ink-soft);
+}
+.mcp-badge.on {
+  border-color: var(--pku-red-border);
+  background: var(--pku-red-light);
+  color: var(--pku-red-dark);
+  font-weight: 600;
+}
+.mcp-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.mcp-tool-chip {
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--pku-red-border);
+  background: var(--pku-red-light);
+  color: var(--pku-red-dark);
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+.mcp-server-actions {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+.mcp-calls-label {
+  margin-top: 16px;
+}
+.mcp-call-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin-top: 6px;
+}
+.mcp-call-table th {
+  text-align: left;
+  padding: 7px 10px;
+  background: var(--pku-red-light);
+  color: var(--pku-red-dark);
+  font-weight: 600;
+  border-bottom: 1px solid var(--pku-red-border);
+  white-space: nowrap;
+}
+.mcp-call-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--card-border);
+  vertical-align: top;
+}
+.mcp-call-table tr:last-child td {
+  border-bottom: none;
+}
+.mcp-call-ref {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+.mcp-status {
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--card-border);
+  white-space: nowrap;
+}
+.mcp-status.st-success {
+  border-color: #c4e3c8;
+  background: #eef8ef;
+  color: #1d6b2b;
+}
+.mcp-status.st-denied {
+  border-color: var(--pku-red-border);
+  background: var(--pku-red-light);
+  color: var(--pku-red-dark);
+}
+.mcp-status.st-error {
+  border-color: #e7d3b0;
+  background: #fdf6e8;
+  color: #8a5a12;
+}
+
 /* ---------- 助手会话视图 ---------- */
 
 .tutor-view {
@@ -1097,5 +1252,140 @@ body {
 }
 .student-username {
   font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+/* ---------- 智能体管理（教师标签页） ---------- */
+
+.agent-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.agent-card {
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 8px;
+}
+.agent-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agent-card-head .skill-name-input {
+  flex: 1;
+  min-width: 0;
+}
+.agent-card-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.agent-card-body > .settings-textarea {
+  margin-top: 6px;
+}
+.agent-bind-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  margin-top: 2px;
+}
+.agent-bind-panel {
+  margin-top: 10px;
+  border-top: 1px dashed var(--card-border);
+  padding-top: 10px;
+}
+.agent-bind-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.agent-bind-row:hover {
+  background: #fffafa;
+}
+
+/* ---------- 学生侧栏：本班智能体选择 ---------- */
+
+.nav-sidebar-agents {
+  background: #fff;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 10px 12px;
+}
+.nav-sidebar-agents-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.nav-sidebar-empty {
+  margin: 0;
+  font-size: 12px;
+}
+.agent-select-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.agent-select-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-select-item:hover {
+  background: var(--pku-red-light);
+  color: var(--pku-red);
+}
+.agent-select-item.active {
+  background: var(--pku-red);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ---------- 回答内 [n] 引用角标 ---------- */
+
+.tutor-ref-mark {
+  border: none;
+  background: var(--pku-red-light);
+  color: var(--pku-red-dark);
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 5px;
+  margin: 0 1px;
+  border-radius: 999px;
+  cursor: pointer;
+  vertical-align: super;
+  font-family: inherit;
+}
+.tutor-ref-mark:hover {
+  background: var(--pku-red-border);
 }
 

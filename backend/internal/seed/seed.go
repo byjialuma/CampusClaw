@@ -28,6 +28,10 @@ const (
 	tutorSkillDesc      = "开启时给出解题思路与步骤引导，引用本班材料的标题与位置，不直接给出最终答案。"
 	// tutorSkillContent 是内置「解题引导」的指令内容（编排时并入 system）；教师可改写但不可删除该技能。
 	tutorSkillContent = "学生正在解题，请给出解题思路与步骤引导，引用材料中的相关内容（含材料标题与位置），不要直接给出该题的最终答案。"
+
+	// 预置演示 MCP 服务器：compose 中自建 mcp-demo 服务；教师可在「助手设置」里连接并发现工具。
+	mcpServerName    = "campus-tools"
+	mcpServerBaseURL = "http://mcp-demo:8090"
 )
 
 // seedMaterial 描述一个预置讲义文件与所属班级。
@@ -88,10 +92,37 @@ func Run(ctx context.Context, db *sql.DB, storage *store.Storage, cfg *config.Co
 		if err := ensureSkill(ctx, db, aid); err != nil {
 			return err
 		}
+		if err := ensureMCPServer(ctx, db, c.id, cfg.MCP.AuthToken); err != nil {
+			return err
+		}
 	}
 
 	log.Printf("种子数据检查/写入完成")
 	return nil
+}
+
+// ensureMCPServer 为本班幂等写入预置演示服务器（存在即跳过，不覆盖教师改动）。
+// 令牌缺失时只写无令牌的服务器行（connected=0、清单为空）。
+func ensureMCPServer(ctx context.Context, db *sql.DB, classID int64, authToken string) error {
+	var id int64
+	err := db.QueryRowContext(ctx,
+		`SELECT id FROM mcp_servers WHERE class_id = ? AND name = ?`,
+		classID, mcpServerName).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		var token any // auth_token 允许 NULL
+		if authToken != "" {
+			token = authToken
+		}
+		if _, insErr := db.ExecContext(ctx,
+			`INSERT INTO mcp_servers (class_id, name, base_url, auth_token, connected)
+			 VALUES (?, ?, ?, ?, 0)`,
+			classID, mcpServerName, mcpServerBaseURL, token); insErr != nil {
+			return insErr
+		}
+		log.Printf("写入预置 MCP 服务器: %s (class=%d)", mcpServerName, classID)
+		return nil
+	}
+	return err
 }
 
 func ensureClass(ctx context.Context, db *sql.DB, name string) (int64, error) {
