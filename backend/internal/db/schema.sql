@@ -72,9 +72,14 @@ CREATE TABLE IF NOT EXISTS skills (
   content      MEDIUMTEXT   NULL,
   source       VARCHAR(16)  NOT NULL DEFAULT 'custom',
   builtin      TINYINT(1)   NOT NULL DEFAULT 0,
+  slug         VARCHAR(64)  NULL,
+  frontmatter  JSON         NULL,
+  dir_path     VARCHAR(255) NULL,
+  content_hash CHAR(64)     NULL,
   created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_skills_assistant (assistant_id),
+  UNIQUE KEY uq_skills_assistant_slug (assistant_id, slug),
   CONSTRAINT fk_skills_assistant FOREIGN KEY (assistant_id) REFERENCES assistants (id) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 

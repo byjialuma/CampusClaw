@@ -66,7 +66,7 @@ func TestFormulaHintThemes(t *testing.T) {
 }
 
 func TestFormulaHintMiss(t *testing.T) {
-	got := formulaHint("今天天气怎么样")
+	got := formulaHint("请介绍一下常见的几何图形")
 	if got != textFormulaUsage {
 		t.Errorf("未命中主题词应返回用法说明，实际:\n%s", got)
 	}

@@ -68,6 +68,15 @@ func main() {
 		log.Fatalf("写入种子数据失败: %v", err)
 	}
 
+	// 技能包：存量技能回填为标准技能包（逐条容错，失败不阻断启动）。
+	skillStorage, err := tutor.NewSkillStorage(cfg.DataDir)
+	if err != nil {
+		log.Fatalf("初始化技能包存储失败: %v", err)
+	}
+	if err := tutor.BackfillSkillPackages(rootCtx, database, skillStorage); err != nil {
+		log.Printf("技能包回填未完全成功（继续启动）: %v", err)
+	}
+
 	// ---- 向量检索组件装配 ----
 	embedder, err := embedding.New(cfg.Embedding)
 	if err != nil {
@@ -132,7 +141,8 @@ func main() {
 		MCPDial: func(baseURL, token string, timeout time.Duration) tutor.MCPCaller {
 			return mcp.NewClient(baseURL, token, timeout)
 		},
-		MCPTimeout: cfg.MCP.Timeout,
+		MCPTimeout:   cfg.MCP.Timeout,
+		SkillStorage: skillStorage,
 	}
 
 	api := &server.API{
@@ -149,10 +159,11 @@ func main() {
 			Vectors:  vectors,
 			TopK:     cfg.Qdrant.TopK,
 		},
-		QASvc:      qaSvc,
-		Tutor:      tutorSvc,
-		TutorStore: tutorRepo,
-		MCPStore:   tutorRepo,
+		QASvc:        qaSvc,
+		Tutor:        tutorSvc,
+		TutorStore:   tutorRepo,
+		SkillStorage: skillStorage,
+		MCPStore:     tutorRepo,
 		MCPDial: func(baseURL, token string, timeout time.Duration) server.MCPProbe {
 			return mcp.NewClient(baseURL, token, timeout)
 		},

@@ -281,3 +281,4 @@ func isLatinLetter(b byte) bool {
 func formatNumber(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
 }
+

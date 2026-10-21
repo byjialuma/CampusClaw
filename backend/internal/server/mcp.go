@@ -310,7 +310,12 @@ func (a *API) validateSkillToolRefs(ctx context.Context, classID int64, content 
 	if err != nil {
 		return err.Error()
 	}
-	for _, ref := range parsed.Refs {
+	return a.validateSkillToolRefList(ctx, classID, parsed.Refs)
+}
+
+// validateSkillToolRefList 校验已解析的工具引用（技能包合并 frontmatter 后使用），规则与正文校验一致。
+func (a *API) validateSkillToolRefList(ctx context.Context, classID int64, refs []tutorpkg.ToolRef) string {
+	for _, ref := range refs {
 		if ref.Builtin {
 			continue
 		}

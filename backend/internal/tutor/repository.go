@@ -28,13 +28,15 @@ var (
 	ErrAgentNameConflict     = errors.New("本班智能体名称已存在")
 	ErrAgentInUse            = errors.New("智能体仍被会话引用，无法删除")
 	ErrHandoutNotFound       = errors.New("材料不存在")
+	ErrSkillPackageConflict  = errors.New("本班已存在同名技能包")
 )
 
 // 技能来源取值（与 skills.source 约定一致）。
 const (
-	SkillSourceSeed   = "seed"   // 内置播种（如解题引导，builtin=1）
-	SkillSourceUpload = "upload" // 教师上传 md/txt 文件创建
-	SkillSourceOnline = "online" // 教师在线新建
+	SkillSourceSeed    = "seed"    // 内置播种（如解题引导，builtin=1）
+	SkillSourceUpload  = "upload"  // 教师上传 md/txt 文件创建
+	SkillSourceOnline  = "online"  // 教师在线新建
+	SkillSourcePackage = "package" // 教师上传 zip 技能包创建
 )
 
 // 角色取值（与 messages.role ENUM 一致）。
@@ -44,14 +46,22 @@ const (
 )
 
 // Skill 是助手的一条技能（指令文档：名称 + 内容）；builtin=1 的内置技能不可删除。
+// 技能包技能额外携带 slug、声明资源清单与包目录；纯文本技能这些字段为空。
 type Skill struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Content     string `json:"content"`
-	Source      string `json:"source"`
-	Builtin     bool   `json:"builtin"`
-	Enabled     bool   `json:"enabled"`
+	ID          int64           `json:"id"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Content     string          `json:"content"`
+	Source      string          `json:"source"`
+	Builtin     bool            `json:"builtin"`
+	Enabled     bool            `json:"enabled"`
+	Slug        string          `json:"slug,omitempty"`
+	Resources   []string        `json:"resources"`
+	Files       []SkillResource `json:"files,omitempty"`
+	DirPath     string          `json:"-"`
+	Frontmatter map[string]any  `json:"-"`
+	Conditions  []string        `json:"-"`
+	ToolRefs    []ToolRef       `json:"-"`
 }
 
 // SkillRef 是某轮回答启用技能的快照（仅存 id+name，删除技能后历史仍可展示）。
@@ -150,13 +160,54 @@ type assistantConfigRow struct {
 	SkillSource  sql.NullString
 	SkillBuiltin sql.NullBool
 	SkillEnabled sql.NullBool
+	SkillSlug    sql.NullString
+	Frontmatter  []byte
+	DirPath      sql.NullString
+}
+
+// applySkillMeta 从 slug/frontmatter/dir_path 三列还原技能包元信息；
+// frontmatter 缺失或非法时按纯文本技能处理（条件与工具回退正文解析）。
+func applySkillMeta(sk *Skill, slug, dirPath sql.NullString, rawFM []byte) {
+	sk.Slug = slug.String
+	sk.DirPath = dirPath.String
+	sk.Resources = []string{}
+	sk.Conditions = []string{}
+	sk.ToolRefs = []ToolRef{}
+	if len(rawFM) == 0 {
+		return
+	}
+	var fm map[string]any
+	if err := json.Unmarshal(rawFM, &fm); err != nil {
+		return
+	}
+	sk.Frontmatter = fm
+	if v, ok := fm[skillFrontmatterCondKey]; ok {
+		if conds, err := asStringList(skillFrontmatterCondKey, v); err == nil {
+			sk.Conditions = conds
+		}
+	}
+	if v, ok := fm[skillFrontmatterResourceKey]; ok {
+		if res, err := asStringList(skillFrontmatterResourceKey, v); err == nil {
+			sk.Resources = res
+		}
+	}
+	if v, ok := fm[skillFrontmatterToolsKey]; ok {
+		if items, err := asStringList(skillFrontmatterToolsKey, v); err == nil {
+			for _, item := range items {
+				if ref, errMsg := parseToolRef(strings.TrimSpace(item)); errMsg == "" {
+					sk.ToolRefs = append(sk.ToolRefs, ref)
+				}
+			}
+		}
+	}
 }
 
 // AssistantConfig 读取本班助手提示词与全部技能（含内容/来源/内置标记）；班级只信参数（来自 JWT claims）。
 func (r *TutorRepository) AssistantConfig(ctx context.Context, classID int64) (*AssistantConfig, error) {
 	rows, err := r.DB.QueryContext(ctx,
 		`SELECT a.id, a.name, a.system_prompt,
-		        s.id, s.name, s.description, s.content, s.source, s.builtin, s.enabled
+		        s.id, s.name, s.description, s.content, s.source, s.builtin, s.enabled,
+		        s.slug, s.frontmatter, s.dir_path
 		 FROM assistants a
 		 LEFT JOIN skills s ON s.assistant_id = a.id
 		 WHERE a.class_id = ?
@@ -172,7 +223,8 @@ func (r *TutorRepository) AssistantConfig(ctx context.Context, classID int64) (*
 		var row assistantConfigRow
 		if err := rows.Scan(&row.AssistantID, &row.Name, &row.SystemPrompt,
 			&row.SkillID, &row.SkillName, &row.SkillDesc, &row.SkillContent,
-			&row.SkillSource, &row.SkillBuiltin, &row.SkillEnabled); err != nil {
+			&row.SkillSource, &row.SkillBuiltin, &row.SkillEnabled,
+			&row.SkillSlug, &row.Frontmatter, &row.DirPath); err != nil {
 			return nil, err
 		}
 		if cfg == nil {
@@ -183,7 +235,7 @@ func (r *TutorRepository) AssistantConfig(ctx context.Context, classID int64) (*
 			}
 		}
 		if row.SkillID.Valid {
-			cfg.Skills = append(cfg.Skills, Skill{
+			sk := Skill{
 				ID:          row.SkillID.Int64,
 				Name:        row.SkillName.String,
 				Description: row.SkillDesc.String,
@@ -191,7 +243,9 @@ func (r *TutorRepository) AssistantConfig(ctx context.Context, classID int64) (*
 				Source:      row.SkillSource.String,
 				Builtin:     row.SkillBuiltin.Bool,
 				Enabled:     row.SkillEnabled.Bool,
-			})
+			}
+			applySkillMeta(&sk, row.SkillSlug, row.DirPath, row.Frontmatter)
+			cfg.Skills = append(cfg.Skills, sk)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -276,6 +330,116 @@ func (r *TutorRepository) DeleteSkill(ctx context.Context, classID, skillID int6
 		return qerr
 	}
 	return ErrSkillBuiltinProtected
+}
+
+// SlugExists 判断本班是否已存在同名技能包标识（slug 同班唯一）。
+func (r *TutorRepository) SlugExists(ctx context.Context, classID int64, slug string) (bool, error) {
+	var one int
+	err := r.DB.QueryRowContext(ctx,
+		`SELECT 1 FROM skills s
+		 JOIN assistants a ON a.id = s.assistant_id
+		 WHERE a.class_id = ? AND s.slug = ?
+		 LIMIT 1`, classID, slug).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// CreateSkillPackage 在本班助手下写入技能包技能（默认停用），frontmatter 与 slug 一并入库。
+// 同班 slug 冲突映射为 ErrSkillPackageConflict，本班助手不存在映射为 ErrAssistantNotFound。
+func (r *TutorRepository) CreateSkillPackage(ctx context.Context, classID int64, pkg *SkillPackage, slug string) (*Skill, error) {
+	res, err := r.DB.ExecContext(ctx,
+		`INSERT INTO skills (assistant_id, name, description, content, source, enabled, slug, frontmatter)
+		 SELECT a.id, ?, ?, ?, ?, 0, ?, ? FROM assistants a WHERE a.class_id = ?`,
+		pkg.Name, pkg.Description, pkg.Body, SkillSourcePackage, slug,
+		FrontmatterJSON(pkg.Frontmatter), classID)
+	if err != nil {
+		if isDuplicateKey(err) {
+			return nil, ErrSkillPackageConflict
+		}
+		return nil, err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return nil, ErrAssistantNotFound
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	sk := &Skill{
+		ID:          id,
+		Name:        pkg.Name,
+		Description: pkg.Description,
+		Content:     pkg.Body,
+		Source:      SkillSourcePackage,
+		Slug:        slug,
+		Resources:   pkg.Resources,
+		Frontmatter: pkg.Frontmatter,
+		Conditions:  pkg.Conditions,
+		ToolRefs:    pkg.ToolRefs,
+	}
+	return sk, nil
+}
+
+// SetSkillPackagePath 回填技能包目录与内容哈希；技能必须属于本班助手。
+func (r *TutorRepository) SetSkillPackagePath(ctx context.Context, classID, skillID int64, dirPath, contentHash string) error {
+	res, err := r.DB.ExecContext(ctx,
+		`UPDATE skills s
+		 JOIN assistants a ON a.id = s.assistant_id
+		 SET s.dir_path = ?, s.content_hash = ?
+		 WHERE s.id = ? AND a.class_id = ?`,
+		dirPath, contentHash, skillID, classID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		if err := r.requireSkill(ctx, classID, skillID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GetSkillPackage 按 id 取本班技能（含包目录、声明资源与工具引用）；跨班或不存在按不存在处理。
+func (r *TutorRepository) GetSkillPackage(ctx context.Context, classID, skillID int64) (*Skill, error) {
+	var sk Skill
+	var desc, content, slug, dirPath sql.NullString
+	var rawFM []byte
+	err := r.DB.QueryRowContext(ctx,
+		`SELECT s.id, s.name, s.description, s.content, s.source, s.builtin, s.enabled,
+		        s.slug, s.frontmatter, s.dir_path
+		 FROM skills s
+		 JOIN assistants a ON a.id = s.assistant_id
+		 WHERE s.id = ? AND a.class_id = ?`, skillID, classID).
+		Scan(&sk.ID, &sk.Name, &desc, &content, &sk.Source, &sk.Builtin, &sk.Enabled,
+			&slug, &rawFM, &dirPath)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSkillNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	sk.Description = desc.String
+	sk.Content = content.String
+	applySkillMeta(&sk, slug, dirPath, rawFM)
+	return &sk, nil
+}
+
+// requireSkill 校验技能属于本班助手；跨班或不存在一律按不存在处理。
+func (r *TutorRepository) requireSkill(ctx context.Context, classID, skillID int64) error {
+	var one int
+	err := r.DB.QueryRowContext(ctx,
+		`SELECT 1 FROM skills s
+		 JOIN assistants a ON a.id = s.assistant_id
+		 WHERE s.id = ? AND a.class_id = ?`, skillID, classID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrSkillNotFound
+	}
+	return err
 }
 
 // ---------- 智能体（agents）与技能/材料绑定 ----------
@@ -514,7 +678,8 @@ func (r *TutorRepository) AgentConfig(ctx context.Context, classID, agentID int6
 	cfg.SystemPrompt = prompt.String
 
 	rows, err := r.DB.QueryContext(ctx,
-		`SELECT s.id, s.name, s.description, s.content, s.source, s.builtin, s.enabled
+		`SELECT s.id, s.name, s.description, s.content, s.source, s.builtin, s.enabled,
+		        s.slug, s.frontmatter, s.dir_path
 		 FROM agent_skills ags
 		 JOIN skills s ON s.id = ags.skill_id
 		 WHERE ags.agent_id = ? AND s.enabled = 1
@@ -525,13 +690,15 @@ func (r *TutorRepository) AgentConfig(ctx context.Context, classID, agentID int6
 	defer rows.Close()
 	for rows.Next() {
 		var sk Skill
-		var desc, content sql.NullString
+		var desc, content, slug, dirPath sql.NullString
+		var rawFM []byte
 		if err := rows.Scan(&sk.ID, &sk.Name, &desc, &content,
-			&sk.Source, &sk.Builtin, &sk.Enabled); err != nil {
+			&sk.Source, &sk.Builtin, &sk.Enabled, &slug, &rawFM, &dirPath); err != nil {
 			return nil, err
 		}
 		sk.Description = desc.String
 		sk.Content = content.String
+		applySkillMeta(&sk, slug, dirPath, rawFM)
 		cfg.Skills = append(cfg.Skills, sk)
 	}
 	if err := rows.Err(); err != nil {

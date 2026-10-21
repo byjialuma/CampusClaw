@@ -55,13 +55,14 @@ const (
 
 // Event 是流式提问过程中推给前端的一个事件。
 type Event struct {
-	Type         string
-	Citations    []Citation
-	Skills       []SkillRef
-	ToolCalls    []ToolCallRef
-	Text         string
-	MessageID    int64
-	ErrorMessage string
+	Type           string
+	Citations      []Citation
+	Skills         []SkillRef
+	ToolCalls      []ToolCallRef
+	SkillResources []SkillResourceStatus
+	Text           string
+	MessageID      int64
+	ErrorMessage   string
 }
 
 // ToolCallRef 是 meta 中本轮一条工具引用的最终状态（失败时含可读原因）。
@@ -133,6 +134,9 @@ type Service struct {
 	MCPRepo    MCPRepo
 	MCPDial    MCPDial
 	MCPTimeout time.Duration
+
+	// SkillStorage 用于按 frontmatter 白名单加载技能包资源；为 nil 时跳过资源加载。
+	SkillStorage *SkillStorage
 }
 
 // AskStream 执行流式提问。embedding/检索失败发生在 meta 之前，返回错误由 handler 映射 503；
@@ -192,12 +196,18 @@ func (s *Service) AskStream(ctx context.Context, in AskInput) (*AskOutput, error
 	// 7. 工具阶段：仅处理本轮命中技能的工具引用（零命中即不解析、不调用、不审计）。
 	toolCalls, toolData := s.runToolPhase(ctx, in, hitSkill)
 
+	// 7.1 技能包资源：仅命中且声明了白名单资源时读取，失败不阻断回答。
+	skillResources, resourceData := s.loadSkillResources(hitSkill)
+
 	// 8. 组装 system（提示词 + 至多一条命中技能内容 + 材料上下文/反编造护栏）与完整消息序列。
-	// 工具结果以数据块拼入本轮用户消息（系统提示词不变；落库消息仍为原始问题）。
+	// 工具结果与技能资源均以数据块拼入本轮用户消息（系统提示词不变；落库消息仍为原始问题）。
 	systemContent := buildSystem(prompt, hitSkill, citations)
 	userContent := in.Question
 	if toolData != "" {
-		userContent = in.Question + "\n\n" + toolData
+		userContent += "\n\n" + toolData
+	}
+	if resourceData != "" {
+		userContent += "\n\n" + resourceData
 	}
 	messages := make([]llm.Message, 0, len(history)+2)
 	messages = append(messages, llm.Message{Role: "system", Content: systemContent})
@@ -209,7 +219,13 @@ func (s *Service) AskStream(ctx context.Context, in AskInput) (*AskOutput, error
 	skillRefs := skillRefsOf(hitSkill)
 
 	// 9. meta 先于回答文本推送（引用、本轮命中技能与工具调用状态先行渲染）。
-	emit(Event{Type: EventMeta, Citations: citations, Skills: skillRefs, ToolCalls: toolCalls})
+	emit(Event{
+		Type:           EventMeta,
+		Citations:      citations,
+		Skills:         skillRefs,
+		ToolCalls:      toolCalls,
+		SkillResources: skillResources,
+	})
 
 	// 10. 流式生成，delta 透传。
 	answer, streamErr := s.LLM.StreamAsk(ctx, messages, func(delta string) error {
@@ -367,16 +383,30 @@ func (s *Service) runToolPhase(ctx context.Context, in AskInput, hitSkill *Skill
 	return calls, buildToolDataBlock(results)
 }
 
+// loadSkillResources 仅在命中技能声明了白名单资源且存储可用时读取；
+// 未命中或未声明资源时不读取任何文件，读取失败由 LoadResources 记录状态而不阻断回答。
+func (s *Service) loadSkillResources(hitSkill *Skill) ([]SkillResourceStatus, string) {
+	if hitSkill == nil || s.SkillStorage == nil || len(hitSkill.Resources) == 0 {
+		return nil, ""
+	}
+	return s.SkillStorage.LoadResources(hitSkill.DirPath, hitSkill.Resources)
+}
+
 // collectToolRefs 按技能声明顺序收集工具引用并去重；本轮命中技能的声明引用全部参与调用
 // （「适用条件」仅用于路由计分，命中后不再二次过滤）。
+// 技能包以 frontmatter 的 allowed-tools 优先，纯文本技能回退正文「工具：」行。
 func collectToolRefs(skill Skill) []ToolRef {
-	parsed, err := ParseSkillTools(skill.Content)
-	if err != nil {
-		return nil // 保存入口已校验；存量脏数据按无引用处理，不中断回答
+	refs := skill.ToolRefs
+	if len(refs) == 0 {
+		parsed, err := ParseSkillTools(skill.Content)
+		if err != nil {
+			return nil // 保存入口已校验；存量脏数据按无引用处理，不中断回答
+		}
+		refs = parsed.Refs
 	}
 	seen := map[string]bool{}
-	out := make([]ToolRef, 0, len(parsed.Refs))
-	for _, ref := range parsed.Refs {
+	out := make([]ToolRef, 0, len(refs))
+	for _, ref := range refs {
 		if seen[ref.Raw] {
 			continue
 		}

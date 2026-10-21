@@ -82,6 +82,27 @@ func EnsureSchema(ctx context.Context, db *sql.DB) error {
 		"ALTER TABLE skills ADD COLUMN builtin TINYINT(1) NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// 技能包：包标识、frontmatter、包目录与内容哈希。
+	if err := ensureColumn(ctx, db, "skills", "slug",
+		"ALTER TABLE skills ADD COLUMN slug VARCHAR(64) NULL"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "skills", "frontmatter",
+		"ALTER TABLE skills ADD COLUMN frontmatter JSON NULL"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "skills", "dir_path",
+		"ALTER TABLE skills ADD COLUMN dir_path VARCHAR(255) NULL"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "skills", "content_hash",
+		"ALTER TABLE skills ADD COLUMN content_hash CHAR(64) NULL"); err != nil {
+		return err
+	}
+	if err := ensureIndex(ctx, db, "skills", "uq_skills_assistant_slug",
+		"ALTER TABLE skills ADD UNIQUE KEY uq_skills_assistant_slug (assistant_id, slug)"); err != nil {
+		return err
+	}
 	if err := ensureColumn(ctx, db, "messages", "skills_used",
 		"ALTER TABLE messages ADD COLUMN skills_used JSON NULL"); err != nil {
 		return err

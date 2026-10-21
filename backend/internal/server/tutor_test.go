@@ -114,10 +114,10 @@ func newSrvTutorStore() *srvTutorStore {
 			// 「适用条件」行使技能可被词法路由命中（问题含「集合」即命中）。
 			1: {{ID: 50, Name: "解题引导", Description: "引导",
 				Content: "学生正在解题，请给出解题思路与步骤引导。\n适用条件：集合，题目",
-				Source: "seed", Builtin: true, Enabled: true}},
+				Source:  "seed", Builtin: true, Enabled: true}},
 			2: {{ID: 60, Name: "解题引导", Description: "引导",
 				Content: "学生正在解题，请给出解题思路与步骤引导。\n适用条件：集合，题目",
-				Source: "seed", Builtin: true, Enabled: true}},
+				Source:  "seed", Builtin: true, Enabled: true}},
 		},
 		agents:        map[int64]*tutorpkg.Agent{},
 		agentSkills:   map[int64][]int64{},
@@ -427,6 +427,62 @@ func (s *srvTutorStore) DeleteSkill(_ context.Context, classID, skillID int64) e
 		}
 	}
 	return tutorpkg.ErrSkillNotFound
+}
+
+func (s *srvTutorStore) SlugExists(_ context.Context, classID int64, slug string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sk := range s.skills[classID] {
+		if sk.Slug == slug {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *srvTutorStore) CreateSkillPackage(_ context.Context, classID int64, pkg *tutorpkg.SkillPackage, slug string) (*tutorpkg.Skill, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.skills[classID]; !ok {
+		return nil, tutorpkg.ErrAssistantNotFound
+	}
+	for _, sk := range s.skills[classID] {
+		if sk.Slug == slug {
+			return nil, tutorpkg.ErrSkillPackageConflict
+		}
+	}
+	s.nextSkill++
+	sk := tutorpkg.Skill{
+		ID: s.nextSkill, Name: pkg.Name, Description: pkg.Description, Content: pkg.Body,
+		Source: tutorpkg.SkillSourcePackage, Slug: slug,
+		Resources: pkg.Resources, Conditions: pkg.Conditions, ToolRefs: pkg.ToolRefs,
+	}
+	s.skills[classID] = append(s.skills[classID], sk)
+	return &sk, nil
+}
+
+func (s *srvTutorStore) SetSkillPackagePath(_ context.Context, classID, skillID int64, dirPath, _ string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, sk := range s.skills[classID] {
+		if sk.ID == skillID {
+			s.skills[classID][i].DirPath = dirPath
+			return nil
+		}
+	}
+	return tutorpkg.ErrSkillNotFound
+}
+
+func (s *srvTutorStore) GetSkillPackage(_ context.Context, classID, skillID int64) (*tutorpkg.Skill, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sk := range s.skills[classID] {
+		if sk.ID == skillID {
+			cp := sk
+			return &cp, nil
+		}
+	}
+	return nil, tutorpkg.ErrSkillNotFound
 }
 
 func (s *srvTutorStore) RenameConversationIfEmpty(_ context.Context, convID int64, question string) error {
@@ -836,6 +892,9 @@ func TestTutorStudentManagementForbidden(t *testing.T) {
 	for _, tc := range []struct{ method, path, body string }{
 		{http.MethodPost, "/api/tutor/assistant/skills", `{"name":"x","content":"y"}`},
 		{http.MethodPost, "/api/tutor/assistant/skills/upload", `{}`},
+		{http.MethodPost, "/api/tutor/assistant/skills/package", `{}`},
+		{http.MethodGet, "/api/tutor/assistant/skills/50", ``},
+		{http.MethodGet, "/api/tutor/assistant/skills/50/resources?path=assets/a.md", ``},
 		{http.MethodDelete, "/api/tutor/assistant/skills/50", ``},
 	} {
 		req = signedReq(t, api, testUser("studentA1"), tc.method, tc.path, strings.NewReader(tc.body))

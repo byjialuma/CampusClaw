@@ -1,5 +1,6 @@
 """POST /api/sessions 登录：状态码、响应内容、JWT 载荷与 users/classes 表一致性。"""
 import json
+import re
 import time
 from datetime import datetime, timezone
 
@@ -43,7 +44,9 @@ def run(ctx):
 
     # 过期时间在未来
     try:
-        exp = datetime.fromisoformat(str(data["expiresAt"]).replace("Z", "+00:00"))
+        # Go 输出纳秒精度；旧版 Python 的 fromisoformat 仅接受 3/6 位小数，先截断到微秒。
+        raw = re.sub(r"(\.\d{6})\d+", r"\1", str(data["expiresAt"]).replace("Z", "+00:00"))
+        exp = datetime.fromisoformat(raw)
         checks.append(Check("expiresAt 在未来", exp > datetime.now(timezone.utc), str(data["expiresAt"])))
     except Exception as e:
         checks.append(Check("expiresAt 可解析", False, str(e)))

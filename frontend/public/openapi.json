@@ -343,7 +343,7 @@
             "content": {
               "text/event-stream": {
                 "schema": { "type": "string", "description": "event: meta/delta/done/error + data: JSON" },
-                "example": "event: meta\ndata: {\"citations\":[{\"documentId\":1,\"fileName\":\"讲义.md\",\"fileType\":\"md\",\"snippet\":\"...\",\"locator\":{\"kind\":\"heading\",\"path\":\"第 3 章\"},\"score\":0.83,\"index\":1}],\"skills\":[{\"id\":2,\"name\":\"一元二次\"}],\"toolCalls\":[{\"toolRef\":\"formula_hint@campus-tools\",\"serverName\":\"campus-tools\",\"status\":\"success\"}]}\n\nevent: delta\ndata: {\"text\":\"我们先回顾\"}\n\nevent: done\ndata: {\"messageId\":45}\n"
+                "example": "event: meta\ndata: {\"citations\":[{\"documentId\":1,\"fileName\":\"讲义.md\",\"fileType\":\"md\",\"snippet\":\"...\",\"locator\":{\"kind\":\"heading\",\"path\":\"第 3 章\"},\"score\":0.83,\"index\":1}],\"skills\":[{\"id\":2,\"name\":\"勾股定理解题引导\"}],\"toolCalls\":[{\"toolRef\":\"formula_hint@campus-tools\",\"serverName\":\"campus-tools\",\"status\":\"success\"}],\"skillResources\":[{\"path\":\"references/pythagorean-theorem.md\",\"loaded\":true}]}\n\nevent: delta\ndata: {\"text\":\"我们先回顾\"}\n\nevent: done\ndata: {\"messageId\":45}\n"
               }
             }
           },
@@ -435,7 +435,57 @@
         }
       }
     },
+    "/api/tutor/assistant/skills/package": {
+      "post": {
+        "tags": ["解题助手"],
+        "summary": "上传技能包（仅教师）",
+        "description": "multipart 表单，文件字段名 `file`，仅支持 .zip，≤512KB。包根目录必须包含 `SKILL.md`（frontmatter 至少含 name、description，可选 适用条件、allowed-tools、resources）；可选目录 references/、assets/、scripts/。\n\n安全校验：拒绝绝对路径、`..` 穿越、反斜杠穿越、符号链接、重复路径与非 UTF-8 内容；解压总量 ≤2MB、文件数 ≤200、单文件 ≤512KB。新技能默认停用，脚本不会被执行。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary", "description": ".zip 技能包，≤512KB，根目录含 SKILL.md" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "技能包创建成功（默认停用）",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillPackageView" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "本班已存在同名技能包",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "本班已存在同名技能包" } } }
+          }
+        }
+      }
+    },
     "/api/tutor/assistant/skills/{id}": {
+      "get": {
+        "tags": ["解题助手"],
+        "summary": "技能包详情与资源清单（仅教师）",
+        "description": "返回技能字段、工具引用与包内文件清单；跨班或不存在返回 404。",
+        "parameters": [{ "$ref": "#/components/parameters/SkillId" }],
+        "responses": {
+          "200": {
+            "description": "技能包详情",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SkillPackageView" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
       "put": {
         "tags": ["解题助手"],
         "summary": "启用/停用技能（仅教师）",
@@ -478,6 +528,30 @@
             "description": "内置技能不可删除",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "内置技能不可删除" } } }
           }
+        }
+      }
+    },
+    "/api/tutor/assistant/skills/{id}/resources": {
+      "get": {
+        "tags": ["解题助手"],
+        "summary": "读取技能包内资源（仅教师）",
+        "description": "按 `path` 读取包内单个文件；路径限定在 references/、assets/、scripts/ 内，越界返回 400，跨班或文件不存在返回 404。文本资源返回 `text/plain; charset=utf-8`，其余为 `application/octet-stream`，并带 `Cache-Control: no-store`。脚本仅可下载查看，不会被执行。",
+        "parameters": [
+          { "$ref": "#/components/parameters/SkillId" },
+          { "name": "path", "in": "query", "required": true, "schema": { "type": "string", "example": "references/pythagorean-theorem.md" }, "description": "包内相对路径" }
+        ],
+        "responses": {
+          "200": {
+            "description": "资源内容",
+            "content": {
+              "text/plain": { "schema": { "type": "string" } },
+              "application/octet-stream": { "schema": { "type": "string", "format": "binary" } }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
     },
@@ -926,9 +1000,38 @@
           "name": { "type": "string" },
           "description": { "type": "string" },
           "content": { "type": "string" },
-          "source": { "type": "string", "enum": ["seed", "upload", "online"], "description": "seed=内置 / upload=上传 / online=自建" },
+          "source": { "type": "string", "enum": ["seed", "upload", "online", "package"], "description": "seed=内置 / upload=上传 / online=自建 / package=技能包" },
           "builtin": { "type": "boolean", "description": "内置技能禁止删除" },
-          "enabled": { "type": "boolean" }
+          "enabled": { "type": "boolean" },
+          "slug": { "type": "string", "description": "技能包唯一标识（仅 package 来源）" },
+          "resources": { "type": "array", "items": { "type": "string" }, "description": "运行时按需加载的资源白名单（仅 package 来源）" }
+        }
+      },
+      "SkillPackageFile": {
+        "type": "object",
+        "description": "技能包内落盘的一个文件条目",
+        "properties": {
+          "path": { "type": "string", "example": "references/pythagorean-theorem.md" },
+          "kind": { "type": "string", "enum": ["references", "assets", "scripts"], "description": "按顶层目录分类" },
+          "size": { "type": "integer", "format": "int64", "description": "文件字节数" }
+        }
+      },
+      "SkillPackageView": {
+        "allOf": [{ "$ref": "#/components/schemas/Skill" }],
+        "description": "技能包详情：技能字段 + 工具引用 + 包内文件清单",
+        "properties": {
+          "tools": { "type": "array", "items": { "$ref": "#/components/schemas/ToolRef" } },
+          "files": { "type": "array", "items": { "$ref": "#/components/schemas/SkillPackageFile" } }
+        }
+      },
+      "SkillResourceStatus": {
+        "type": "object",
+        "description": "本轮技能资源加载状态（SSE meta.skillResources）",
+        "properties": {
+          "path": { "type": "string" },
+          "loaded": { "type": "boolean" },
+          "truncated": { "type": "boolean", "description": "是否因体积上限被截断" },
+          "error": { "type": "string", "description": "加载失败原因；失败不阻断回答" }
         }
       },
       "AssistantConfig": {

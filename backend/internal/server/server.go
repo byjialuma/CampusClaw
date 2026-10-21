@@ -12,6 +12,7 @@ import (
 	"campusclaw/internal/model"
 	qapkg "campusclaw/internal/qa"
 	searchpkg "campusclaw/internal/search"
+	tutorpkg "campusclaw/internal/tutor"
 )
 
 // SessionCookie 是服务端会话 Cookie 名称。
@@ -87,6 +88,7 @@ type API struct {
 	QASvc         qaService
 	Tutor         tutorAsker
 	TutorStore    tutorStore
+	SkillStorage  *tutorpkg.SkillStorage
 	MCPStore      mcpStore
 	MCPDial       MCPDialer
 	MCPTimeout    time.Duration
@@ -117,6 +119,9 @@ func (a *API) NewHandler() http.Handler {
 	mux.HandleFunc("PUT /api/tutor/assistant/skills/{id}", a.requireAuth(a.requireTeacher(a.putTutorSkill)))
 	mux.HandleFunc("POST /api/tutor/assistant/skills", a.requireAuth(a.requireTeacher(a.createTutorSkill)))
 	mux.HandleFunc("POST /api/tutor/assistant/skills/upload", a.requireAuth(a.requireTeacher(a.uploadTutorSkill)))
+	mux.HandleFunc("POST /api/tutor/assistant/skills/package", a.requireAuth(a.requireTeacher(a.uploadTutorSkillPackage)))
+	mux.HandleFunc("GET /api/tutor/assistant/skills/{id}", a.requireAuth(a.requireTeacher(a.getTutorSkillPackage)))
+	mux.HandleFunc("GET /api/tutor/assistant/skills/{id}/resources", a.requireAuth(a.requireTeacher(a.getTutorSkillResource)))
 	mux.HandleFunc("DELETE /api/tutor/assistant/skills/{id}", a.requireAuth(a.requireTeacher(a.deleteTutorSkill)))
 
 	// 智能体管理：列表登录即可（按角色裁剪），增删改与绑定仅教师；班级取自 JWT claims。

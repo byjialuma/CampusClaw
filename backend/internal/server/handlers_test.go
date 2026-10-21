@@ -34,11 +34,13 @@ func newFakeUsers() *fakeUsers {
 	return &fakeUsers{
 		users: map[string]*model.User{
 			"teacherA":  {ID: 1, Username: "teacherA", DisplayName: "教师A", Role: model.RoleTeacher, ClassID: 1, ClassName: "A班"},
+			"teacherB":  {ID: 4, Username: "teacherB", DisplayName: "教师B", Role: model.RoleTeacher, ClassID: 2, ClassName: "B班"},
 			"studentA1": {ID: 2, Username: "studentA1", DisplayName: "学生A1", Role: model.RoleStudent, ClassID: 1, ClassName: "A班"},
 			"studentB1": {ID: 3, Username: "studentB1", DisplayName: "学生B1", Role: model.RoleStudent, ClassID: 2, ClassName: "B班"},
 		},
 		password: map[string]string{
 			"teacherA":  "ta-pw",
+			"teacherB":  "tb-pw",
 			"studentA1": "a1-pw",
 			"studentB1": "b1-pw",
 		},

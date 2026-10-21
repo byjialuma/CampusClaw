@@ -33,6 +33,7 @@ const SOURCE_LABEL: Record<TutorSkillSource, string> = {
   seed: '内置',
   upload: '上传',
   online: '自建',
+  package: '技能包',
 }
 
 // 工具调用状态文案。

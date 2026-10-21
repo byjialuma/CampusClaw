@@ -17,6 +17,7 @@ import type {
   MCPCall,
   CreateMCPServerRequest,
   UpdateMCPServerRequest,
+  SkillResourceStatus,
 } from './types'
 
 const TOKEN_KEY = 'cc_access_token'
@@ -347,11 +348,16 @@ function dispatchSSEEvent(rawEvent: string, onEvent: (e: TutorStreamEvent) => vo
 
   switch (event) {
     case 'meta': {
-      const d = data as { citations?: Citation[]; skills?: TutorSkillRef[] }
+      const d = data as {
+        citations?: Citation[]
+        skills?: TutorSkillRef[]
+        skillResources?: SkillResourceStatus[]
+      }
       onEvent({
         type: 'meta',
         citations: Array.isArray(d.citations) ? d.citations : [],
         skills: Array.isArray(d.skills) ? d.skills : [],
+        skillResources: Array.isArray(d.skillResources) ? d.skillResources : [],
       })
       break
     }
@@ -539,6 +545,53 @@ export async function uploadSkill(file: File, name?: string): Promise<TutorSkill
     throw new ApiError(status, (data as { error: string }).error ?? '上传技能失败')
   }
   return data as TutorSkill
+}
+
+// 上传技能包（.zip ≤512KB，根目录必须含 SKILL.md；默认停用）。
+export async function uploadSkillPackage(file: File): Promise<TutorSkill> {
+  const form = new FormData()
+  form.append('file', file)
+  const { status, data } = await request<TutorSkill | { error: string }>(
+    '/api/tutor/assistant/skills/package',
+    { method: 'POST', body: form },
+  )
+  if (status === 401) handle401()
+  if (status !== 201) {
+    throw new ApiError(status, (data as { error: string }).error ?? '上传技能包失败')
+  }
+  return data as TutorSkill
+}
+
+// 读取本班技能包详情（含工具引用与包内文件清单）；跨班或不存在 404。
+export async function fetchSkillPackage(skillId: number): Promise<TutorSkill> {
+  const { status, data } = await request<TutorSkill | { error: string }>(
+    `/api/tutor/assistant/skills/${skillId}`,
+  )
+  if (status === 401) handle401()
+  if (status !== 200) {
+    throw new ApiError(status, (data as { error: string }).error ?? '加载技能包详情失败')
+  }
+  return data as TutorSkill
+}
+
+// 读取技能包内单个资源；路径限定在 references/assets/scripts 内。
+export async function fetchSkillResource(skillId: number, path: string): Promise<Blob> {
+  const token = getToken()
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const resp = await fetch(
+    `/api/tutor/assistant/skills/${skillId}/resources?path=${encodeURIComponent(path)}`,
+    { headers, cache: 'no-store' },
+  )
+  if (resp.status === 401) {
+    clearToken()
+    window.location.replace('/login')
+    throw new ApiError(401, '未登录')
+  }
+  if (!resp.ok) throw new ApiError(resp.status, '加载技能资源失败')
+  return resp.blob()
 }
 
 // 删除技能（内置技能服务端返回 409，前端在调用前已禁用）。

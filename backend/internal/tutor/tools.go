@@ -99,11 +99,16 @@ func RouteSkill(skills []Skill, question string) *Skill {
 	bestScore := 0
 	for i := range skills {
 		sk := &skills[i]
-		parsed, err := ParseSkillTools(sk.Content)
-		if err != nil {
-			continue // 正文非法时不参与计分（保存入口已校验）
+		// 技能包以 frontmatter 的适用条件优先；纯文本技能回退正文「适用条件：」行。
+		conditions := sk.Conditions
+		if len(conditions) == 0 {
+			parsed, err := ParseSkillTools(sk.Content)
+			if err != nil {
+				continue // 正文非法时不参与计分（保存入口已校验）
+			}
+			conditions = parsed.Condition
 		}
-		score := countConditionHits(parsed.Condition, question)
+		score := countConditionHits(conditions, question)
 		if score == 0 {
 			continue
 		}

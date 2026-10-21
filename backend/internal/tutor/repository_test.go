@@ -391,10 +391,10 @@ func marshalCitationsForTest(cs []Citation) ([]byte, error) {
 func TestAssistantConfigJoin(t *testing.T) {
 	rows := &fakeRows{
 		cols: []string{"a.id", "a.name", "a.system_prompt", "s.id", "s.name", "s.description",
-			"s.content", "s.source", "s.builtin", "s.enabled"},
+			"s.content", "s.source", "s.builtin", "s.enabled", "s.slug", "s.frontmatter", "s.dir_path"},
 		rows: [][]driver.Value{
 			{int64(9), "A班·解题助手", "你是本班解题助教……", int64(4), "解题引导", "开启时……",
-				"学生正在解题……", "seed", true, true},
+				"学生正在解题……", "seed", true, true, nil, nil, nil},
 		},
 	}
 	repo, conn := newTestRepo(0, rows)
@@ -420,8 +420,8 @@ func TestAssistantConfigJoin(t *testing.T) {
 func TestAssistantConfigWithoutSkills(t *testing.T) {
 	rows := &fakeRows{
 		cols: []string{"a.id", "a.name", "a.system_prompt", "s.id", "s.name", "s.description",
-			"s.content", "s.source", "s.builtin", "s.enabled"},
-		rows: [][]driver.Value{{int64(9), "A班·解题助手", nil, nil, nil, nil, nil, nil, nil, nil}},
+			"s.content", "s.source", "s.builtin", "s.enabled", "s.slug", "s.frontmatter", "s.dir_path"},
+		rows: [][]driver.Value{{int64(9), "A班·解题助手", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil}},
 	}
 	repo, _ := newTestRepo(0, rows)
 
@@ -756,10 +756,11 @@ func TestReplaceAgentBindingsEmpty(t *testing.T) {
 func TestAgentConfigWithBindings(t *testing.T) {
 	agent := &fakeRows{cols: []string{"name", "system_prompt"}, rows: [][]driver.Value{{"答疑助手", "你是本班助教……"}}}
 	skills := &fakeRows{
-		cols: []string{"s.id", "s.name", "s.description", "s.content", "s.source", "s.builtin", "s.enabled"},
+		cols: []string{"s.id", "s.name", "s.description", "s.content", "s.source", "s.builtin", "s.enabled",
+			"s.slug", "s.frontmatter", "s.dir_path"},
 		rows: [][]driver.Value{
-			{int64(4), "解题引导", "引导描述", "不要直接给出该题的最终答案", "seed", true, true},
-			{int64(9), "英语写作", "", "润色术语", "online", false, true},
+			{int64(4), "解题引导", "引导描述", "不要直接给出该题的最终答案", "seed", true, true, nil, nil, nil},
+			{int64(9), "英语写作", "", "润色术语", "online", false, true, nil, nil, nil},
 		},
 	}
 	handouts := &fakeRows{cols: []string{"handout_id"}, rows: [][]driver.Value{{int64(3)}, {int64(9)}}}

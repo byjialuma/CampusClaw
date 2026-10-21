@@ -3,19 +3,35 @@ import {
   createSkill,
   deleteSkill,
   fetchAssistantConfig,
+  fetchSkillPackage,
   setSkillEnabled,
   uploadSkill,
+  uploadSkillPackage,
 } from '../api'
-import type { AssistantConfigData, TutorSkill, TutorSkillSource } from '../types'
+import type {
+  AssistantConfigData,
+  SkillPackageFile,
+  TutorSkill,
+  TutorSkillSource,
+} from '../types'
 
 // 技能来源徽标文案。
 const SOURCE_LABEL: Record<TutorSkillSource, string> = {
   seed: '内置',
   upload: '上传',
   online: '自建',
+  package: '技能包',
 }
 
+// 资源清单按顶层目录分组展示。
+const RESOURCE_GROUPS: { kind: string; label: string }[] = [
+  { kind: 'references', label: 'references（参考资料）' },
+  { kind: 'assets', label: 'assets（模板与素材）' },
+  { kind: 'scripts', label: 'scripts（脚本，不会被执行）' },
+]
+
 const SKILL_FILE_MAX_BYTES = 64 * 1024
+const SKILL_PACKAGE_MAX_BYTES = 512 * 1024
 const SKILL_CONTENT_MAX = 20000
 const SKILL_NAME_MAX = 120
 
@@ -53,12 +69,17 @@ export default function SkillManagement() {
   const [loading, setLoading] = useState(true)
   const [busySkill, setBusySkill] = useState<number | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [packageUploading, setPackageUploading] = useState(false)
+  // 技能包资源清单：列表接口不含文件明细，按需拉取详情后缓存。
+  const [packageFiles, setPackageFiles] = useState<Record<number, SkillPackageFile[]>>({})
+  const [packageLoading, setPackageLoading] = useState<number | null>(null)
   const [creating, setCreating] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [newName, setNewName] = useState('')
   const [newContent, setNewContent] = useState('')
   const [error, setError] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
+  const packageRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -138,6 +159,47 @@ export default function SkillManagement() {
     }
   }
 
+  async function onUploadPackage(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || packageUploading) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setError('技能包仅支持 .zip 文件')
+      return
+    }
+    if (file.size > SKILL_PACKAGE_MAX_BYTES) {
+      setError('技能包不能超过 512KB')
+      return
+    }
+    setPackageUploading(true)
+    setError('')
+    try {
+      const sk = await uploadSkillPackage(file)
+      setCfg((prev) => (prev ? { ...prev, skills: [...prev.skills, sk] } : prev))
+      if (sk.files) {
+        setPackageFiles((prev) => ({ ...prev, [sk.id]: sk.files ?? [] }))
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '上传技能包失败')
+    } finally {
+      setPackageUploading(false)
+    }
+  }
+
+  async function onLoadPackageFiles(skillId: number) {
+    if (packageLoading !== null) return
+    setPackageLoading(skillId)
+    setError('')
+    try {
+      const detail = await fetchSkillPackage(skillId)
+      setPackageFiles((prev) => ({ ...prev, [skillId]: detail.files ?? [] }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '加载资源清单失败')
+    } finally {
+      setPackageLoading(null)
+    }
+  }
+
   async function onCreateSkill(e: FormEvent) {
     e.preventDefault()
     const name = newName.trim()
@@ -180,6 +242,43 @@ export default function SkillManagement() {
                   </span>
                 </span>
                 {sk.description && <span className="muted skill-desc">{sk.description}</span>}
+                {sk.source === 'package' && (
+                  <span className="skill-package-files">
+                    {packageFiles[sk.id] === undefined ? (
+                      <button
+                        type="button"
+                        className="btn btn-small"
+                        disabled={packageLoading !== null}
+                        onClick={() => onLoadPackageFiles(sk.id)}
+                      >
+                        {packageLoading === sk.id ? '加载资源清单…' : '查看资源清单'}
+                      </button>
+                    ) : (
+                      <>
+                        {packageFiles[sk.id].length === 0 && (
+                          <span className="muted">包内没有资源文件</span>
+                        )}
+                        {RESOURCE_GROUPS.map((group) => {
+                          const items = packageFiles[sk.id].filter((f) => f.kind === group.kind)
+                          if (items.length === 0) return null
+                          return (
+                            <span key={group.kind} className="skill-package-group">
+                              <span className="muted">{group.label}</span>
+                              {items.map((f) => (
+                                <span key={f.path} className="skill-resource-chip" title={`${f.size} 字节`}>
+                                  {f.path}
+                                </span>
+                              ))}
+                            </span>
+                          )
+                        })}
+                        <span className="muted skill-package-note">
+                          资源仅在技能命中时按白名单加载；脚本不会被执行。
+                        </span>
+                      </>
+                    )}
+                  </span>
+                )}
                 {toolRefs.length > 0 && (
                   <span className="skill-tool-refs">
                     <span className="muted">工具引用：</span>
@@ -239,6 +338,22 @@ export default function SkillManagement() {
             onClick={() => fileRef.current?.click()}
           >
             {uploading ? '上传中…' : '上传技能文档（.md/.txt ≤64KB）'}
+          </button>
+          <input
+            ref={packageRef}
+            type="file"
+            accept=".zip"
+            hidden
+            onChange={onUploadPackage}
+          />
+          <button
+            type="button"
+            className="btn btn-small"
+            disabled={packageUploading}
+            title="zip 包根目录需包含 SKILL.md；references/assets/scripts 为可选目录，脚本不会被执行"
+            onClick={() => packageRef.current?.click()}
+          >
+            {packageUploading ? '上传中…' : '上传技能包（.zip ≤512KB）'}
           </button>
           <button
             type="button"

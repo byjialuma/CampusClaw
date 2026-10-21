@@ -813,6 +813,35 @@ body {
   color: var(--ink-soft);
 }
 
+/* ---------- 技能包资源清单 ---------- */
+
+.skill-package-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.skill-package-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.skill-resource-chip {
+  font-size: 11.5px;
+  line-height: 1.2;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--card-border);
+  background: #fafafa;
+  color: var(--ink-soft);
+  word-break: break-all;
+}
+.skill-package-note {
+  font-size: 11.5px;
+}
+
 /* ---------- 教师助手设置：MCP 服务器管理区 ---------- */
 
 .settings-mcp {

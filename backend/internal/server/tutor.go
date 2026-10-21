@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -33,6 +34,10 @@ type tutorStore interface {
 	SetSkillEnabled(ctx context.Context, classID, skillID int64, enabled bool) error
 	CreateSkill(ctx context.Context, classID int64, name, content, source string) (*tutorpkg.Skill, error)
 	DeleteSkill(ctx context.Context, classID, skillID int64) error
+	SlugExists(ctx context.Context, classID int64, slug string) (bool, error)
+	CreateSkillPackage(ctx context.Context, classID int64, pkg *tutorpkg.SkillPackage, slug string) (*tutorpkg.Skill, error)
+	SetSkillPackagePath(ctx context.Context, classID, skillID int64, dirPath, contentHash string) error
+	GetSkillPackage(ctx context.Context, classID, skillID int64) (*tutorpkg.Skill, error)
 
 	// 智能体 CRUD 与技能/材料绑定（班级一律取参数，来自 JWT claims）。
 	ListAgents(ctx context.Context, classID int64) ([]tutorpkg.Agent, error)
@@ -58,6 +63,7 @@ const agentNameMaxRunes = 120
 // 技能入参校验口径（设计 §6）。
 const (
 	skillNameMaxRunes    = 120
+	skillDescMaxRunes    = 255
 	skillContentMaxRunes = 20000
 	skillUploadMaxBytes  = 64 * 1024 // 64KB
 )
@@ -80,6 +86,13 @@ type assistantResponse struct {
 type assistantSkillView struct {
 	tutorpkg.Skill
 	Tools []tutorpkg.ToolRef `json:"tools"`
+}
+
+// skillPackageView 是技能包详情：技能字段 + 工具引用 + 包内资源清单。
+type skillPackageView struct {
+	tutorpkg.Skill
+	Tools []tutorpkg.ToolRef       `json:"tools"`
+	Files []tutorpkg.SkillResource `json:"files"`
 }
 
 // teacherAgentView 是教师视图的智能体：含提示词与绑定的技能/材料清单。
@@ -128,9 +141,10 @@ type okResponse struct {
 
 // SSE 各事件的 data 载荷。
 type sseMetaPayload struct {
-	Citations []tutorpkg.Citation    `json:"citations"`
-	Skills    []tutorpkg.SkillRef    `json:"skills"`
-	ToolCalls []tutorpkg.ToolCallRef `json:"toolCalls"`
+	Citations      []tutorpkg.Citation            `json:"citations"`
+	Skills         []tutorpkg.SkillRef            `json:"skills"`
+	ToolCalls      []tutorpkg.ToolCallRef         `json:"toolCalls"`
+	SkillResources []tutorpkg.SkillResourceStatus `json:"skillResources"`
 }
 type sseDeltaPayload struct {
 	Text string `json:"text"`
@@ -281,7 +295,12 @@ func (s *sseWriter) write(e tutorpkg.Event) {
 	var data any
 	switch e.Type {
 	case tutorpkg.EventMeta:
-		data = sseMetaPayload{Citations: e.Citations, Skills: e.Skills, ToolCalls: e.ToolCalls}
+		data = sseMetaPayload{
+			Citations:      e.Citations,
+			Skills:         e.Skills,
+			ToolCalls:      e.ToolCalls,
+			SkillResources: e.SkillResources,
+		}
 	case tutorpkg.EventDelta:
 		data = sseDeltaPayload{Text: e.Text}
 	case tutorpkg.EventDone:
@@ -320,13 +339,19 @@ func (a *API) getTutorAssistant(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// toAssistantSkillViews 为每条技能解析工具引用供界面展示；非法引用按空处理，不影响配置读取。
+// toAssistantSkillViews 为每条技能解析工具引用供界面展示；包技能优先用 frontmatter 声明，
+// 纯文本技能回退正文解析。非法引用按空处理，不影响配置读取。
 func toAssistantSkillViews(skills []tutorpkg.Skill) []assistantSkillView {
 	out := make([]assistantSkillView, 0, len(skills))
 	for _, sk := range skills {
-		refs := []tutorpkg.ToolRef{}
-		if parsed, err := tutorpkg.ParseSkillTools(sk.Content); err == nil {
-			refs = parsed.Refs
+		refs := sk.ToolRefs
+		if len(refs) == 0 {
+			if parsed, err := tutorpkg.ParseSkillTools(sk.Content); err == nil {
+				refs = parsed.Refs
+			}
+		}
+		if refs == nil {
+			refs = []tutorpkg.ToolRef{}
 		}
 		out = append(out, assistantSkillView{Skill: sk, Tools: refs})
 	}
@@ -630,13 +655,202 @@ func (a *API) uploadTutorSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, sk)
 }
 
+// uploadTutorSkillPackage 上传 zip 技能包（仅教师）：解析校验 → 入库 → 落盘 → 回填目录。
+// 落盘或回填失败时删除已写入的技能行与目录，保证不留下半成品。
+func (a *API) uploadTutorSkillPackage(w http.ResponseWriter, r *http.Request) {
+	u := auth.CurrentUser(r.Context())
+	if a.SkillStorage == nil {
+		writeError(w, http.StatusServiceUnavailable, "技能包存储未启用")
+		return
+	}
+	// 压缩包上限 + multipart 开销。
+	r.Body = http.MaxBytesReader(w, r.Body, tutorpkg.MaxSkillPackageBytes+1<<20)
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "缺少技能包文件（表单字段 file）")
+		return
+	}
+	defer file.Close()
+
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".zip") {
+		writeError(w, http.StatusBadRequest, "技能包必须是 .zip 文件")
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(file, tutorpkg.MaxSkillPackageBytes+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "读取技能包失败")
+		return
+	}
+	if len(data) > tutorpkg.MaxSkillPackageBytes {
+		writeError(w, http.StatusBadRequest, "技能包大小不能超过 512KB")
+		return
+	}
+	decoded, err := tutorpkg.DecodeSkillPackageZip(data)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	pkg := decoded.Package
+	if len([]rune(pkg.Name)) > skillNameMaxRunes {
+		writeError(w, http.StatusBadRequest, "技能名称长度不能超过 120 字")
+		return
+	}
+	if len([]rune(pkg.Description)) > skillDescMaxRunes {
+		writeError(w, http.StatusBadRequest, "技能描述长度不能超过 255 字")
+		return
+	}
+	if len([]rune(pkg.Body)) > skillContentMaxRunes {
+		writeError(w, http.StatusBadRequest, "技能内容长度不能超过 20000 字")
+		return
+	}
+	if errMsg := a.validateSkillToolRefList(r.Context(), u.ClassID, pkg.ToolRefs); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
+	}
+
+	slug := tutorpkg.SkillSlug(pkg.Name)
+	exists, err := a.TutorStore.SlugExists(r.Context(), u.ClassID, slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "上传技能包失败")
+		return
+	}
+	if exists {
+		writeError(w, http.StatusConflict, "本班已存在同名技能包")
+		return
+	}
+
+	sk, err := a.TutorStore.CreateSkillPackage(r.Context(), u.ClassID, pkg, slug)
+	if err != nil {
+		switch {
+		case errors.Is(err, tutorpkg.ErrSkillPackageConflict):
+			writeError(w, http.StatusConflict, "本班已存在同名技能包")
+		case errors.Is(err, tutorpkg.ErrAssistantNotFound):
+			writeError(w, http.StatusNotFound, "本班助手不存在")
+		default:
+			writeError(w, http.StatusInternalServerError, "上传技能包失败")
+		}
+		return
+	}
+
+	dirPath, err := a.SkillStorage.WritePackage(u.ClassID, sk.ID, decoded.Files)
+	if err != nil {
+		_ = a.TutorStore.DeleteSkill(r.Context(), u.ClassID, sk.ID)
+		writeError(w, http.StatusInternalServerError, "技能包落盘失败")
+		return
+	}
+	if err := a.TutorStore.SetSkillPackagePath(r.Context(), u.ClassID, sk.ID, dirPath, tutorpkg.ContentHash(pkg.Raw)); err != nil {
+		_ = a.SkillStorage.RemovePackage(dirPath)
+		_ = a.TutorStore.DeleteSkill(r.Context(), u.ClassID, sk.ID)
+		writeError(w, http.StatusInternalServerError, "技能包落盘失败")
+		return
+	}
+	sk.DirPath = dirPath
+	writeJSON(w, http.StatusCreated, a.skillPackageView(sk))
+}
+
+// getTutorSkillPackage 返回本班技能包详情与资源清单（仅教师）；跨班或不存在 404。
+func (a *API) getTutorSkillPackage(w http.ResponseWriter, r *http.Request) {
+	u := auth.CurrentUser(r.Context())
+	skillID, ok := parsePathID(r, "id")
+	if !ok {
+		writeError(w, http.StatusNotFound, "技能不存在")
+		return
+	}
+	sk, err := a.TutorStore.GetSkillPackage(r.Context(), u.ClassID, skillID)
+	if err != nil {
+		if errors.Is(err, tutorpkg.ErrSkillNotFound) {
+			writeError(w, http.StatusNotFound, "技能不存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "读取技能详情失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, a.skillPackageView(sk))
+}
+
+// getTutorSkillResource 读取技能包内的单个资源（仅教师）；路径限定在 references/assets/scripts 内。
+// 非法路径 400，跨班、无包目录或文件不存在 404。
+func (a *API) getTutorSkillResource(w http.ResponseWriter, r *http.Request) {
+	u := auth.CurrentUser(r.Context())
+	if a.SkillStorage == nil {
+		writeError(w, http.StatusServiceUnavailable, "技能包存储未启用")
+		return
+	}
+	skillID, ok := parsePathID(r, "id")
+	if !ok {
+		writeError(w, http.StatusNotFound, "技能不存在")
+		return
+	}
+	sk, err := a.TutorStore.GetSkillPackage(r.Context(), u.ClassID, skillID)
+	if err != nil {
+		if errors.Is(err, tutorpkg.ErrSkillNotFound) {
+			writeError(w, http.StatusNotFound, "技能不存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "读取技能失败")
+		return
+	}
+	if sk.DirPath == "" {
+		writeError(w, http.StatusNotFound, "技能资源不存在")
+		return
+	}
+	relPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if relPath == "" {
+		writeError(w, http.StatusBadRequest, "缺少资源路径参数 path")
+		return
+	}
+	data, isText, err := a.SkillStorage.ReadResource(sk.DirPath, relPath)
+	if err != nil {
+		if errors.Is(err, tutorpkg.ErrInvalidSkillResourcePath) {
+			writeError(w, http.StatusBadRequest, "非法的资源路径")
+			return
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusNotFound, "技能资源不存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "读取技能资源失败")
+		return
+	}
+	contentType := "application/octet-stream"
+	if isText {
+		contentType = "text/plain; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// skillPackageView 组装技能包详情：解析工具引用与包内资源清单；清单读取失败按空列表返回。
+func (a *API) skillPackageView(sk *tutorpkg.Skill) skillPackageView {
+	view := skillPackageView{Skill: *sk, Tools: sk.ToolRefs, Files: []tutorpkg.SkillResource{}}
+	if view.Tools == nil {
+		view.Tools = []tutorpkg.ToolRef{}
+	}
+	if view.Resources == nil {
+		view.Resources = []string{}
+	}
+	if a.SkillStorage != nil && sk.DirPath != "" {
+		if files, err := a.SkillStorage.ResourceList(sk.DirPath); err == nil {
+			view.Files = files
+		}
+	}
+	return view
+}
+
 // deleteTutorSkill 删除本班自建技能（仅教师）；内置解题引导技能返回 409。
+// 技能包目录随技能行一起清理；删除失败不影响错误语义。
 func (a *API) deleteTutorSkill(w http.ResponseWriter, r *http.Request) {
 	u := auth.CurrentUser(r.Context())
 	skillID, ok := parsePathID(r, "id")
 	if !ok {
 		writeError(w, http.StatusNotFound, "技能不存在")
 		return
+	}
+	var dirPath string
+	if sk, err := a.TutorStore.GetSkillPackage(r.Context(), u.ClassID, skillID); err == nil {
+		dirPath = sk.DirPath
 	}
 	if err := a.TutorStore.DeleteSkill(r.Context(), u.ClassID, skillID); err != nil {
 		switch {
@@ -648,6 +862,9 @@ func (a *API) deleteTutorSkill(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "删除技能失败")
 		}
 		return
+	}
+	if a.SkillStorage != nil && dirPath != "" {
+		_ = a.SkillStorage.RemovePackage(dirPath)
 	}
 	writeJSON(w, http.StatusOK, okResponse{OK: true})
 }

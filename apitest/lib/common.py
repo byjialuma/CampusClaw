@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]  # 仓库根（apitest/lib/ 的上两级）
+FIXTURES = ROOT / "apitest" / "fixtures"
 
 
 def _load_dotenv() -> dict:
@@ -186,6 +187,59 @@ def multipart_file(field, filename, content: bytes, content_type="text/markdown"
         f"\r\n--{boundary}--\r\n".encode(),
     ])
     return body, f"multipart/form-data; boundary={boundary}"
+
+
+def zip_entries(entries: dict) -> bytes:
+    """把 {相对路径: 字节} 打成 zip，用于构造合法/越界技能包。"""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def zip_fixture(name: str) -> bytes:
+    """把 apitest/fixtures/<name>/ 目录现场打包成 zip（保持相对路径）。"""
+    base = FIXTURES / name
+    entries = {
+        p.relative_to(base).as_posix(): p.read_bytes()
+        for p in sorted(base.rglob("*")) if p.is_file()
+    }
+    return zip_entries(entries)
+
+
+def ensure_mcp_server(ctx, token: str, name: str, base_url: str, auth_token: str) -> tuple:
+    """确保本班存在并已连接指定名称的 MCP 服务器；返回 (server_id, created)。"""
+    st, _, body = ctx.http("GET", "/api/tutor/mcp/servers", token=token)
+    if st == 200:
+        for srv in json.loads(body.decode("utf-8", "replace")):
+            if srv.get("name") != name:
+                continue
+            if not srv.get("connected"):
+                ctx.http("POST", f"/api/tutor/mcp/servers/{srv['id']}/connect", token=token)
+            return srv["id"], False
+    st, _, body = ctx.http("POST", "/api/tutor/mcp/servers", token=token,
+                           json_body={"name": name, "baseUrl": base_url, "authToken": auth_token})
+    if st != 201:
+        raise RuntimeError(f"登记 MCP 服务器失败: HTTP {st} {body[:200]!r}")
+    sid = json.loads(body)["id"]
+    ctx.http("POST", f"/api/tutor/mcp/servers/{sid}/connect", token=token)
+    return sid, True
+
+
+def delete_skill_by_name(ctx, token: str, name: str) -> bool:
+    """按名称删除本班非内置技能（用例前置清理，避免固定 fixture 名称重复冲突）。"""
+    st, _, body = ctx.http("GET", "/api/tutor/assistant", token=token)
+    if st != 200:
+        return False
+    for sk in json.loads(body.decode("utf-8", "replace")).get("skills") or []:
+        if sk.get("name") == name and not sk.get("builtin"):
+            ctx.http("DELETE", f"/api/tutor/assistant/skills/{sk['id']}", token=token)
+            return True
+    return False
 
 
 def qdrant_delete_document(document_id: int):

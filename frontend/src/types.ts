@@ -89,8 +89,23 @@ export interface TutorMessage {
   createdAt?: string
 }
 
-// 技能来源：seed=内置种子、upload=教师上传、online=教师在线新建。
-export type TutorSkillSource = 'seed' | 'upload' | 'online'
+// 技能来源：seed=内置种子、upload=教师上传、online=教师在线新建、package=技能包。
+export type TutorSkillSource = 'seed' | 'upload' | 'online' | 'package'
+
+// 技能包内落盘的一个文件条目（按顶层目录分类）。
+export interface SkillPackageFile {
+  path: string
+  kind: 'references' | 'assets' | 'scripts' | string
+  size: number
+}
+
+// 本轮技能资源加载状态（SSE meta 返回）。
+export interface SkillResourceStatus {
+  path: string
+  loaded: boolean
+  truncated?: boolean
+  error?: string
+}
 
 // 技能正文「工具」行解析出的一条引用。
 export interface ToolRef {
@@ -109,6 +124,12 @@ export interface TutorSkill {
   source: TutorSkillSource
   builtin: boolean
   enabled: boolean
+  // 技能包的唯一标识（仅 package 来源返回）。
+  slug?: string
+  // 运行时按需加载的资源白名单（仅 package 来源返回）。
+  resources?: string[]
+  // 包内实际文件清单（仅技能包详情接口返回）。
+  files?: SkillPackageFile[]
   // 技能正文「工具」行解析出的引用；无引用时服务端可能返回 null。
   tools?: ToolRef[] | null
 }
@@ -140,7 +161,12 @@ export interface StudentAgent {
 
 // 流式提问过程中前端收到的事件。
 export type TutorStreamEvent =
-  | { type: 'meta'; citations: Citation[]; skills: TutorSkillRef[] }
+  | {
+      type: 'meta'
+      citations: Citation[]
+      skills: TutorSkillRef[]
+      skillResources?: SkillResourceStatus[]
+    }
   | { type: 'delta'; text: string }
   | { type: 'done'; messageId: number }
   | { type: 'error'; error: string }
